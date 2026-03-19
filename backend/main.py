@@ -23,7 +23,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import google.generativeai as genai        # Gemini SDK — configured at startup
+
 from .config import Settings, get_settings  # typed settings — see config.py
+from .routers import interview               # Task 3: AI interview SSE endpoint
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Use Python's stdlib logger so output lands in Docker logs (stdout/stderr).
@@ -49,8 +52,14 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     logger.info("🚀  JobifAI backend starting — env=%s", settings.environment)
     logger.info("🔗  Supabase URL: %s", settings.supabase_url)
 
-    # TODO (Task 3): initialise Supabase client and attach to app.state
-    # TODO (Task 4): initialise Gemini client and attach to app.state
+    # ── Gemini SDK global configuration ──────────────────────────────────────
+    # `genai.configure()` sets the API key once for the entire process.
+    # The ai_service module calls `genai.GenerativeModel()` per-request, so
+    # this must run before any request is served.
+    genai.configure(api_key=settings.gemini_api_key)
+    logger.info("🤖  Gemini AI configured — model=gemini-1.5-flash")
+
+    # TODO (Task 4): initialise Supabase client and attach to app.state
     # TODO (Task 5): register Stripe webhook secret
 
     yield  # ← application runs while we're suspended here
@@ -133,14 +142,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     # ── Routers ───────────────────────────────────────────────────────────────
-    # As we add features (auth, resume, jobs, agents) we'll import and include
-    # their APIRouters here.  Each router lives in its own module under
-    # backend/routers/ to keep this file focused.
+    # Each feature area has its own APIRouter in backend/routers/.
+    # We mount them here so this file stays focused on app-level concerns
+    # (middleware, CORS, lifespan) rather than individual endpoint logic.
     #
-    # Example (Task 3):
-    #   from .routers import auth, resume
-    #   app.include_router(auth.router,   prefix="/api/v1/auth",   tags=["auth"])
-    #   app.include_router(resume.router, prefix="/api/v1/resume", tags=["resume"])
+    # The router already declares its own prefix ("/api/chat") and tags, so we
+    # include it without an extra prefix here.
+    app.include_router(interview.router)
+    # Future routers (Task 4+):
+    #   app.include_router(auth.router)      # /api/auth
+    #   app.include_router(resume.router)    # /api/resume
+    #   app.include_router(billing.router)   # /api/billing
 
     # ── Core routes (inline for now) ─────────────────────────────────────────
     @app.get("/health", tags=["ops"])

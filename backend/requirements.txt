@@ -28,6 +28,14 @@ python-dotenv==1.0.1
 # Stripe SDK — subscription billing & webhook verification
 stripe==9.11.0
 
+# Google Gemini SDK — async streaming, function calling, token counting
+# We choose the official SDK over raw httpx because it handles:
+#   • gRPC ↔ REST transport negotiation
+#   • Protobuf deserialization for streamed chunks
+#   • Automatic retries and exponential backoff
+#   • Token counting and safety filter parsing
+google-generativeai==0.8.3
+
 # ──────────────────────────────────────────────────────────────
 # Why these choices?
 #   • fastapi + uvicorn  → async I/O matters when awaiting multiple AI calls
