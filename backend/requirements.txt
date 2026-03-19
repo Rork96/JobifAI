@@ -1,0 +1,40 @@
+# ──────────────────────────────────────────────────────────────
+# JobifAI — Backend Python Dependencies
+# Pin minor versions for reproducible builds; bump intentionally.
+# ──────────────────────────────────────────────────────────────
+
+# Web framework — ASGI, async-first, auto OpenAPI docs
+fastapi==0.111.0
+
+# ASGI server — runs FastAPI; "standard" extras pull in websockets + httptools
+uvicorn[standard]==0.29.0
+
+# Async HTTP client — used to call Gemini, Stripe, and external APIs
+httpx==0.27.0
+
+# Official Supabase Python client (wraps postgrest-py + gotrue + storage3)
+supabase==2.4.6
+
+# Data validation & serialisation — FastAPI depends on this under the hood
+pydantic==2.7.1
+
+# Pydantic v2 extracted settings management into its own package.
+# BaseSettings (reads from .env) lives here, NOT in pydantic itself.
+pydantic-settings==2.2.1
+
+# Settings management — loads .env files into typed Pydantic BaseSettings models
+python-dotenv==1.0.1
+
+# Stripe SDK — subscription billing & webhook verification
+stripe==9.11.0
+
+# ──────────────────────────────────────────────────────────────
+# Why these choices?
+#   • fastapi + uvicorn  → async I/O matters when awaiting multiple AI calls
+#   • httpx              → replaces requests; supports async/await natively
+#   • supabase           → single client for Postgres, Auth, and Storage RLS
+#   • pydantic v2        → 5–10× faster than v1; FastAPI v0.111 requires ≥ v2
+#   • python-dotenv      → keeps secrets out of source code
+#   • stripe             → we verify webhook signatures server-side (never trust
+#                          client-sent payment confirmations)
+# ──────────────────────────────────────────────────────────────

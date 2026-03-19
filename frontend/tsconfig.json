@@ -1,0 +1,54 @@
+{
+  // The TypeScript compiler checks your code for type errors but does NOT
+  // emit JavaScript — Vite handles transpilation via esbuild (much faster).
+  // `noEmit: true` below enforces this.
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+
+    // skipLibCheck skips type-checking .d.ts files in node_modules.
+    // This dramatically speeds up tsc and avoids noise from third-party types.
+    "skipLibCheck": true,
+
+    // 'bundler' resolution matches how Vite/esbuild resolves imports
+    // (supports package.json exports, bare specifiers, etc.)
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+
+    // Each file is type-checked in isolation — required for bundler mode.
+    "isolatedModules": true,
+
+    // tsc is only used for type checking, not for emitting JS.
+    "noEmit": true,
+
+    // React 17+ JSX transform — no need to `import React` in every file.
+    "jsx": "react-jsx",
+
+    // ── Strictness ────────────────────────────────────────────────────────
+    // `strict: true` enables the most important safety checks:
+    //   strictNullChecks → catches null dereference at compile time
+    //   noImplicitAny    → every variable must be typed
+    //   strictFunctionTypes → function args are checked contravariantly
+    "strict": true,
+
+    // These are set to false during early development to avoid noise
+    // from placeholder/stub code.  Turn on before production.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+
+    // ── Path aliases (must match vite.config.ts resolve.alias) ────────────
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+
+  "include": ["src"],
+
+  // Reference the Node.js config so `vite.config.ts` is also type-checked
+  "references": [{ "path": "./tsconfig.node.json" }]
+}

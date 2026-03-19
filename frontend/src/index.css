@@ -1,0 +1,106 @@
+/*
+ * index.css — Global Styles
+ * ──────────────────────────────────────────────────────────────────────────────
+ * These three @tailwind directives inject:
+ *   base      → Tailwind's CSS reset (normalises browser defaults)
+ *   components → Reusable component classes (we don't define many here)
+ *   utilities  → All the atomic utility classes (flex, text-sm, etc.)
+ *
+ * Keep this file lean — design decisions belong in Tailwind config, not here.
+ * ──────────────────────────────────────────────────────────────────────────────
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design Tokens ─────────────────────────────────────────────────────────── */
+/*
+ * CSS custom properties let us change the whole theme from one place.
+ * They're also readable at runtime (useful for JavaScript animations that
+ * need to match CSS values).
+ */
+:root {
+  --brand-rgb:     124, 58, 237;   /* Used for rgba() in shadows */
+  --radius-sheet:  1.5rem;         /* Bottom Sheet corner radius */
+  --topbar-height: 3.5rem;         /* 56px — must match the TopBar h-14 */
+}
+
+/* ── Base Resets ──────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  /* Remove iOS tap highlight flash on buttons/links */
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  /* Smooth anchor scrolling (used by jump-to-section links) */
+  scroll-behavior: smooth;
+  /* Prevent iOS rubber-band scroll that fights the Bottom Sheet drag gesture */
+  overscroll-behavior-y: none;
+  /* iOS safe-area support (notch / home indicator padding) */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+body {
+  @apply bg-bg font-sans text-gray-900 antialiased;
+  /* Prevent body scroll — each panel manages its own scroll independently */
+  overflow: hidden;
+  height: 100dvh; /* dvh = dynamic viewport height — correct on mobile browsers */
+}
+
+#root {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Utility: Hide scrollbar while keeping scroll functionality ───────────── */
+/*
+ * Used on chat lists and document panels.  Scrollbars look bad on a
+ * polished mobile UI — touch users swipe to scroll anyway.
+ */
+.scrollbar-hidden {
+  scrollbar-width: none;       /* Firefox */
+  -ms-overflow-style: none;    /* IE / old Edge */
+}
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;               /* Chrome / Safari / new Edge */
+}
+
+/* ── Utility: Frosted glass effect ───────────────────────────────────────── */
+/*
+ * Used on the TopBar.  backdrop-filter is GPU-composited — no performance hit.
+ * The @supports guard prevents issues in browsers that don't support it
+ * (they fall back to a solid background).
+ */
+.glass {
+  background: rgba(255, 255, 255, 0.75);
+  @supports (backdrop-filter: blur(12px)) {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background: rgba(255, 255, 255, 0.6);
+  }
+}
+
+.dark .glass {
+  background: rgba(0, 0, 0, 0.75);
+  @supports (backdrop-filter: blur(12px)) {
+    background: rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* ── Skeleton / shimmer loading placeholder ──────────────────────────────── */
+.skeleton {
+  @apply bg-gray-200 dark:bg-gray-700 rounded animate-shimmer;
+  background-image: linear-gradient(
+    90deg,
+    transparent 25%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+}
