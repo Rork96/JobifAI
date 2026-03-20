@@ -95,6 +95,34 @@ interface LangSlice {
   setResumeLang: (lang: LanguageCode) => void;
 }
 
+// ── Onboarding Slice ──────────────────────────────────────────────────────────
+interface OnboardingSlice {
+  /**
+   * Which path the user chose at Step 2 of the onboarding fork.
+   *   'upload'  → user has an existing resume draft + optional JD
+   *   'scratch' → user is building from scratch (voice interview)
+   *   null      → onboarding not yet completed
+   */
+  onboardingMode:      'upload' | 'scratch' | null;
+
+  /**
+   * The pasted / extracted text of the user's uploaded resume draft.
+   * Passed as context to the interview agent when mode === 'upload'.
+   */
+  uploadedResumeText:  string;
+
+  /**
+   * The user's target job description text.
+   * Used by the ATS scorer (evaluate-edit) and the interview agent
+   * to tailor the resume to the specific role.
+   */
+  jobDescription:      string;
+
+  setOnboardingMode:     (mode: 'upload' | 'scratch') => void;
+  setUploadedResumeText: (text: string) => void;
+  setJobDescription:     (jd: string) => void;
+}
+
 // ── Interview Slice ───────────────────────────────────────────────────────────
 interface InterviewSlice {
   // ── State machine ──────────────────────────────────────────────────────────
@@ -186,8 +214,8 @@ interface InterviewSlice {
 }
 
 // ── Combined store type ───────────────────────────────────────────────────────
-/** The full store shape — intersection of all three slices. */
-type AppStore = AuthSlice & LangSlice & InterviewSlice;
+/** The full store shape — intersection of all four slices. */
+type AppStore = AuthSlice & LangSlice & OnboardingSlice & InterviewSlice;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SLICE FACTORIES
@@ -254,6 +282,17 @@ const createLangSlice: StateCreator<AppStore, [], [], LangSlice> = (set) => {
     setResumeLang: (resumeLang) => set({ resumeLang }),
   };
 };
+
+// ── Onboarding Slice Factory ───────────────────────────────────────────────────
+const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (set) => ({
+  onboardingMode:      null,
+  uploadedResumeText:  '',
+  jobDescription:      '',
+
+  setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
+  setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
+  setJobDescription:     (jobDescription)     => set({ jobDescription }),
+});
 
 // ── Interview Slice Factory ────────────────────────────────────────────────────
 const createInterviewSlice: StateCreator<AppStore, [], [], InterviewSlice> = (set, get) => ({
@@ -375,6 +414,7 @@ export const useAppStore = create<AppStore>()(
     (...a) => ({
       ...createAuthSlice(...a),
       ...createLangSlice(...a),
+      ...createOnboardingSlice(...a),
       ...createInterviewSlice(...a),
     }),
     {
