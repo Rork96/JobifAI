@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 import google.generativeai as genai        # Gemini SDK — configured at startup
 
 from .config import Settings, get_settings  # typed settings — see config.py
+from .routers import evaluate               # Task 5: ATS edit scorer endpoint
 from .routers import interview               # Task 3: AI interview SSE endpoint
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -148,8 +149,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #
     # The router already declares its own prefix ("/api/chat") and tags, so we
     # include it without an extra prefix here.
-    app.include_router(interview.router)
-    # Future routers (Task 4+):
+    app.include_router(interview.router)  # POST /api/chat/interview (SSE)
+    app.include_router(evaluate.router)   # POST /api/evaluate-edit (ATS scorer)
+    # Future routers:
     #   app.include_router(auth.router)      # /api/auth
     #   app.include_router(resume.router)    # /api/resume
     #   app.include_router(billing.router)   # /api/billing

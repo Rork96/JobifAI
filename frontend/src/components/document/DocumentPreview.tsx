@@ -1,87 +1,146 @@
 /**
- * components/document/DocumentPreview.tsx — Live Resume Preview
+ * components/document/DocumentPreview.tsx — Live Resume Preview (Canvas)
  * ─────────────────────────────────────────────────────────────────────────────
- * Shows a live, formatted preview of the resume being built during the interview.
- * Data flows in from the Zustand store — as the user answers Mac's questions,
- * the resume appears section by section in real time.
+ * The "Canvas" — a live, formatted preview of the resume being built.
  *
- * KEY DESIGN DECISIONS:
- *   1. Data-driven: renders exactly what's in `resumeData` — no hardcoding.
- *   2. Incremental: each section appears only when data exists for it.
- *   3. Animated: each new section fades in with a spring transition.
- *   4. Paywall gate: when step === 'complete', a blur overlay blocks the view.
- *      Free users see a locked preview; premium users get the export button.
+ * VISUAL DESIGN — Graphite / Orange Theme:
+ *   • Outer panel:   slate-900  (darkest — the "desk" the document sits on)
+ *   • Paper surface: slate-800  (slightly lighter — the document "sheet")
+ *   • Accent colour: orange-400 / orange-500 (brand warm tone)
+ *   • Text:          slate-100 / slate-300 / slate-400 (off-white hierarchy)
  *
- * PAYWALL LOGIC (from the manifesto):
- *   • Gap Analysis during chat → FREE (the preview itself is free)
- *   • Generating the final markdown/PDF → PREMIUM
- *   We implement this by letting the preview render fully (so users see their
- *   data) but blurring it behind the paywall overlay on 'complete'.
- *   This is more compelling than a hard gate — users can see the value before
- *   being asked to pay.
+ * The dark theme was chosen because:
+ *   1. It contrasts beautifully with the light ChatPanel on the left
+ *   2. The orange-on-dark palette feels premium and modern (Figma / Linear vibes)
+ *   3. It makes the orange flash animation highly visible when new bullets arrive
  *
- * TASK 4 INTEGRATION:
- *   Replace the static text rendering with react-markdown + a resume template.
- *   The markdown will be generated server-side from the resumeData object.
+ * HIGHLIGHT-FLASH ANIMATION (new data from AI):
+ *   When a new experience entry, skill, or education entry arrives via the
+ *   validated data_extract → evaluate → commit pipeline, the new item flashes
+ *   with a soft orange ring glow that fades out over 1.4 seconds.
+ *
+ *   Implementation:
+ *     1. `seenIdsRef` tracks all item IDs/keys we've already seen (persistent Set)
+ *     2. A `useEffect` on `resumeData` detects newly arrived items (not in seenIds)
+ *     3. New items are added to `flashingIds` state (triggers re-render)
+ *     4. Each item renders a Framer Motion boxShadow animation if its ID is in
+ *        `flashingIds` — it's removed from the set after 1.4 s
+ *
+ * PAYWALL LOGIC:
+ *   • The preview is always visible (free) — users can see the value they built
+ *   • PDF/markdown EXPORT is the premium gate ($5/24h or monthly)
+ *   • At step 'complete', a blur overlay prompts upgrade without hiding the doc
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, Lock, CheckCircle2 } from 'lucide-react';
+import { FileText, Lock, CheckCircle2, Sparkles } from 'lucide-react';
 import { useAppStore, selectIsInterviewComplete } from '@/store/useAppStore';
 
-// ── Animation preset ──────────────────────────────────────────────────────────
-/** Reused on each resume section to give them a consistent "build" feel. */
+// ── Section-fade preset ───────────────────────────────────────────────────────
+/** Each resume section slides in from slightly below when it first appears. */
 const sectionVariants = {
-  hidden:  { opacity: 0, y: 12 },
-  visible: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 300, damping: 26 } },
+  hidden:  { opacity: 0, y: 14 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: { type: 'spring', stiffness: 280, damping: 24 },
+  },
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export const DocumentPreview: React.FC = () => {
-  // ── Store subscriptions ──────────────────────────────────────────────────────
+
+  // ── Store ─────────────────────────────────────────────────────────────────
   const resumeData  = useAppStore((s) => s.resumeData);
   const isPremium   = useAppStore((s) => s.isPremium);
   const isComplete  = useAppStore(selectIsInterviewComplete);
   const currentStep = useAppStore((s) => s.currentStep);
 
-  const hasContent = Object.keys(resumeData).some(
-    (k) => (resumeData as Record<string, unknown>)[k] !== undefined
-      && (resumeData as Record<string, unknown>)[k] !== '',
+  const hasContent = Object.values(resumeData).some((v) =>
+    v !== undefined && v !== '' && (Array.isArray(v) ? v.length > 0 : true),
   );
+
+  // ── Highlight-flash tracking ───────────────────────────────────────────────
+  // `seenIdsRef` is a persistent Set of item IDs already animated.
+  // We never remove entries from it — once seen, always seen.
+  const seenIdsRef  = useRef<Set<string>>(new Set());
+  const [flashingIds, setFlashingIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const fresh: string[] = [];
+
+    for (const exp of resumeData.experiences ?? []) {
+      if (!seenIdsRef.current.has(exp.id)) {
+        seenIdsRef.current.add(exp.id);
+        fresh.push(exp.id);
+      }
+    }
+    for (const edu of resumeData.education ?? []) {
+      if (!seenIdsRef.current.has(edu.id)) {
+        seenIdsRef.current.add(edu.id);
+        fresh.push(edu.id);
+      }
+    }
+    for (const skill of resumeData.skills ?? []) {
+      const key = `skill:${skill}`;
+      if (!seenIdsRef.current.has(key)) {
+        seenIdsRef.current.add(key);
+        fresh.push(key);
+      }
+    }
+
+    if (fresh.length === 0) return;
+
+    // Add fresh items to the flashing set
+    setFlashingIds((prev) => {
+      const next = new Set(prev);
+      fresh.forEach((id) => next.add(id));
+      return next;
+    });
+
+    // Clear the flash after the animation completes (1.4 s)
+    const timer = setTimeout(() => {
+      setFlashingIds((prev) => {
+        const next = new Set(prev);
+        fresh.forEach((id) => next.delete(id));
+        return next;
+      });
+    }, 1400);
+
+    return () => clearTimeout(timer);
+  }, [resumeData]);
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="relative h-full flex flex-col bg-white dark:bg-surface-dark">
+    <div className="relative h-full flex flex-col bg-slate-900">
 
       {/* ── Panel header ─────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
-        <div className="flex items-center gap-2.5">
-          <FileText className="w-4 h-4 text-brand-500" />
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3.5 border-b border-slate-700/60">
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4 text-orange-400" />
+          <h2 className="text-sm font-semibold text-slate-200">
             Resume Preview
           </h2>
         </div>
 
-        {/* Step completion chips */}
         <div className="flex items-center gap-2">
           {isComplete && (
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-1.5 text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400 rounded-full px-3 py-1"
+              className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2.5 py-0.5"
             >
               <CheckCircle2 className="w-3 h-3" />
               Complete
             </motion.div>
           )}
-
           {isComplete && !isPremium && (
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 dark:bg-amber-900/30 rounded-full px-3 py-1"
+              className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 border border-orange-500/20 rounded-full px-2.5 py-0.5"
             >
               <Lock className="w-3 h-3" />
               Export locked
@@ -93,184 +152,253 @@ export const DocumentPreview: React.FC = () => {
       {/* ── Scrollable resume content ─────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto scrollbar-hidden">
 
-        {/* Empty state */}
+        {/* ── Empty state: animated skeleton ───────────────────────────── */}
         {!hasContent ? (
-          <div className="h-full flex flex-col items-center justify-center gap-5 px-8 text-center">
-            {/* Animated placeholder lines — gives a sense of what's coming */}
+          <div className="h-full flex flex-col items-center justify-center gap-5 px-8 py-10 text-center">
             <div className="w-full max-w-sm space-y-3">
-              {[100, 60, 80, 45, 70, 55].map((w, i) => (
+              {[100, 55, 75, 42, 68, 50].map((w, i) => (
                 <motion.div
                   key={i}
-                  className="h-3 rounded-full skeleton"
+                  className="h-2.5 rounded-full bg-slate-700/80"
                   style={{ width: `${w}%` }}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.08 }}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: [0.4, 0.7, 0.4] }}
+                  transition={{
+                    opacity: { repeat: Infinity, duration: 1.8, delay: i * 0.1 },
+                    x: { duration: 0.3, delay: i * 0.06 },
+                  }}
                 />
               ))}
             </div>
-
-            <div className="mt-4">
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            <div className="mt-2">
+              <p className="text-sm font-medium text-slate-400">
                 Your resume appears here as you chat
               </p>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+              <p className="text-xs text-slate-600 mt-1">
                 Answer Mac's questions to fill it in →
               </p>
             </div>
           </div>
         ) : (
-          /* Live resume document */
-          <div className="p-6 max-w-2xl mx-auto">
+          /* ── Live resume document (the "paper") ──────────────────────── */
+          <div className="p-4 pb-8">
             <motion.div
-              className="space-y-7"
-              initial="hidden"
-              animate="visible"
-              variants={{ visible: { transition: { staggerChildren: 0.1 } } }}
+              className="bg-slate-800 rounded-2xl border border-slate-700/50 shadow-2xl overflow-hidden"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 22 }}
             >
+              {/* Orange top-bar accent — the "header rule" of the document */}
+              <div className="h-1 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-400" />
 
-              {/* ── Name / Target Title ─────────────────────────────────── */}
-              {resumeData.targetTitle && (
-                <motion.div variants={sectionVariants}>
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-50 tracking-tight">
-                    {resumeData.targetTitle}
-                  </h1>
-                  {/* Coloured rule — a design touch to break up the document */}
-                  <div className="mt-2 h-0.5 w-10 bg-brand-500 rounded-full" />
-                </motion.div>
-              )}
-
-              {/* ── Professional Summary ────────────────────────────────── */}
-              {resumeData.summary && (
-                <motion.section variants={sectionVariants}>
-                  <SectionHeading>Professional Summary</SectionHeading>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-                    {resumeData.summary}
-                  </p>
-                </motion.section>
-              )}
-
-              {/* ── Work Experience ─────────────────────────────────────── */}
-              {(resumeData.experiences?.length ?? 0) > 0 && (
-                <motion.section variants={sectionVariants}>
-                  <SectionHeading>Experience</SectionHeading>
-                  <div className="space-y-5">
-                    {resumeData.experiences!.map((exp) => (
-                      <motion.div
-                        key={exp.id}
-                        initial={{ opacity: 0, x: -8 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className="border-l-2 border-brand-200 dark:border-brand-800 pl-4"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                              {exp.title}
-                            </p>
-                            <p className="text-xs font-medium text-brand-600 dark:text-brand-400 mt-0.5">
-                              {exp.company}
-                            </p>
-                          </div>
-                          <p className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">
-                            {exp.startDate} – {exp.endDate ?? 'Present'}
-                          </p>
-                        </div>
-
-                        {exp.responsibilities.length > 0 && (
-                          <ul className="mt-2.5 space-y-1.5">
-                            {exp.responsibilities.map((r, i) => (
-                              <li key={i} className="text-sm text-gray-600 dark:text-gray-400 flex gap-2">
-                                <span className="text-brand-400 flex-shrink-0 mt-0.5">•</span>
-                                <span>{r}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-
-                        {/* Metrics highlighted in a subtle chip */}
-                        {exp.metrics.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {exp.metrics.map((m, i) => (
-                              <span
-                                key={i}
-                                className="text-xs bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-full px-2.5 py-0.5 font-medium"
-                              >
-                                {m}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </motion.div>
-                    ))}
-                  </div>
-                </motion.section>
-              )}
-
-              {/* ── Skills ──────────────────────────────────────────────── */}
-              {(resumeData.skills?.length ?? 0) > 0 && (
-                <motion.section variants={sectionVariants}>
-                  <SectionHeading>Skills</SectionHeading>
-                  <div className="flex flex-wrap gap-2">
-                    {resumeData.skills!.map((skill) => (
-                      <motion.span
-                        key={skill}
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="text-xs bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 rounded-full px-3 py-1 font-medium"
-                      >
-                        {skill}
-                      </motion.span>
-                    ))}
-                  </div>
-                </motion.section>
-              )}
-
-              {/* ── Education ───────────────────────────────────────────── */}
-              {(resumeData.education?.length ?? 0) > 0 && (
-                <motion.section variants={sectionVariants}>
-                  <SectionHeading>Education</SectionHeading>
-                  <div className="space-y-3">
-                    {resumeData.education!.map((edu) => (
-                      <div key={edu.id} className="flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                            {edu.degree} in {edu.field}
-                          </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                            {edu.institution}
-                            {edu.honours && ` · ${edu.honours}`}
-                          </p>
-                        </div>
-                        <p className="text-xs text-gray-400 flex-shrink-0">{edu.graduationYear}</p>
-                      </div>
-                    ))}
-                  </div>
-                </motion.section>
-              )}
-
-              {/* HR compliance notice — reassures users we follow the rules */}
-              {hasContent && (
+              <div className="p-6 space-y-6">
                 <motion.div
-                  variants={sectionVariants}
-                  className="pt-4 border-t border-dashed border-gray-200 dark:border-gray-700"
+                  className="space-y-6"
+                  initial="hidden"
+                  animate="visible"
+                  variants={{ visible: { transition: { staggerChildren: 0.08 } } }}
                 >
-                  <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-                    ✓ Canadian HR standards · Reverse chronological · No discriminatory fields
-                  </p>
+
+                  {/* ── Target Title ──────────────────────────────────── */}
+                  {resumeData.targetTitle && (
+                    <motion.div variants={sectionVariants}>
+                      <h1 className="text-xl font-bold text-slate-100 tracking-tight leading-tight">
+                        {resumeData.targetTitle}
+                      </h1>
+                      <div className="mt-2 h-0.5 w-12 bg-gradient-to-r from-orange-500 to-amber-400 rounded-full" />
+                    </motion.div>
+                  )}
+
+                  {/* ── Professional Summary ──────────────────────────── */}
+                  {resumeData.summary && (
+                    <motion.section variants={sectionVariants}>
+                      <SectionHeading>Professional Summary</SectionHeading>
+                      <p className="text-sm text-slate-300 leading-relaxed">
+                        {resumeData.summary}
+                      </p>
+                    </motion.section>
+                  )}
+
+                  {/* ── Work Experience ───────────────────────────────── */}
+                  {(resumeData.experiences?.length ?? 0) > 0 && (
+                    <motion.section variants={sectionVariants}>
+                      <SectionHeading>Experience</SectionHeading>
+                      <div className="space-y-5">
+                        {resumeData.experiences!.map((exp) => {
+                          const isFlashing = flashingIds.has(exp.id);
+                          return (
+                            <motion.div
+                              key={exp.id}
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{
+                                opacity: 1,
+                                x: 0,
+                                boxShadow: isFlashing
+                                  ? [
+                                      '0 0 0 2px rgba(251,146,60,0.7), 0 0 16px rgba(251,146,60,0.2)',
+                                      '0 0 0 2px rgba(251,146,60,0.3), 0 0 8px rgba(251,146,60,0.1)',
+                                      '0 0 0 0px rgba(251,146,60,0)',
+                                    ]
+                                  : '0 0 0 0px rgba(251,146,60,0)',
+                              }}
+                              transition={{
+                                opacity: { duration: 0.3 },
+                                x: { duration: 0.3 },
+                                boxShadow: { duration: 1.4, ease: 'easeOut' },
+                              }}
+                              className="border-l-2 border-orange-500/40 pl-4 rounded-r-lg"
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-100">
+                                    {exp.title}
+                                  </p>
+                                  <p className="text-xs font-medium text-orange-400 mt-0.5">
+                                    {exp.company}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-slate-500 whitespace-nowrap flex-shrink-0 font-mono">
+                                  {exp.startDate} – {exp.endDate ?? 'Present'}
+                                </p>
+                              </div>
+
+                              {exp.responsibilities.length > 0 && (
+                                <ul className="mt-2.5 space-y-1.5">
+                                  {exp.responsibilities.map((r, i) => (
+                                    <li
+                                      key={i}
+                                      className="text-sm text-slate-300 flex gap-2"
+                                    >
+                                      <span className="text-orange-500/70 flex-shrink-0 mt-0.5 select-none">
+                                        ›
+                                      </span>
+                                      <span>{r}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+
+                              {exp.metrics.length > 0 && (
+                                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                                  {exp.metrics.map((m, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-xs bg-emerald-500/12 text-emerald-300 border border-emerald-500/20 rounded-full px-2.5 py-0.5 font-medium"
+                                    >
+                                      📈 {m}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </motion.section>
+                  )}
+
+                  {/* ── Skills ────────────────────────────────────────── */}
+                  {(resumeData.skills?.length ?? 0) > 0 && (
+                    <motion.section variants={sectionVariants}>
+                      <SectionHeading>Skills</SectionHeading>
+                      <div className="flex flex-wrap gap-1.5">
+                        {resumeData.skills!.map((skill) => {
+                          const key = `skill:${skill}`;
+                          const isFlashing = flashingIds.has(key);
+                          return (
+                            <motion.span
+                              key={skill}
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{
+                                opacity: 1,
+                                scale: 1,
+                                boxShadow: isFlashing
+                                  ? [
+                                      '0 0 0 2px rgba(251,146,60,0.6)',
+                                      '0 0 0 1px rgba(251,146,60,0.2)',
+                                      '0 0 0 0px rgba(251,146,60,0)',
+                                    ]
+                                  : '0 0 0 0px rgba(251,146,60,0)',
+                              }}
+                              transition={{
+                                opacity: { duration: 0.25 },
+                                scale: { type: 'spring', stiffness: 380, damping: 22 },
+                                boxShadow: { duration: 1.4, ease: 'easeOut' },
+                              }}
+                              className="text-xs bg-orange-500/12 text-orange-300 border border-orange-500/20 rounded-full px-3 py-1 font-medium"
+                            >
+                              {skill}
+                            </motion.span>
+                          );
+                        })}
+                      </div>
+                    </motion.section>
+                  )}
+
+                  {/* ── Education ─────────────────────────────────────── */}
+                  {(resumeData.education?.length ?? 0) > 0 && (
+                    <motion.section variants={sectionVariants}>
+                      <SectionHeading>Education</SectionHeading>
+                      <div className="space-y-3">
+                        {resumeData.education!.map((edu) => {
+                          const isFlashing = flashingIds.has(edu.id);
+                          return (
+                            <motion.div
+                              key={edu.id}
+                              animate={{
+                                boxShadow: isFlashing
+                                  ? [
+                                      '0 0 0 2px rgba(251,146,60,0.6)',
+                                      '0 0 0 0px rgba(251,146,60,0)',
+                                    ]
+                                  : '0 0 0 0px rgba(251,146,60,0)',
+                              }}
+                              transition={{ duration: 1.4, ease: 'easeOut' }}
+                              className="flex items-start justify-between gap-4 rounded-lg"
+                            >
+                              <div>
+                                <p className="text-sm font-semibold text-slate-100">
+                                  {edu.degree} in {edu.field}
+                                </p>
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                  {edu.institution}
+                                  {edu.honours && (
+                                    <span className="text-orange-400/80">
+                                      {' · '}{edu.honours}
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                              <p className="text-xs text-slate-500 flex-shrink-0 font-mono">
+                                {edu.graduationYear}
+                              </p>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </motion.section>
+                  )}
+
+                  {/* ── HR compliance footer ──────────────────────────── */}
+                  {hasContent && (
+                    <motion.div
+                      variants={sectionVariants}
+                      className="pt-4 border-t border-dashed border-slate-700"
+                    >
+                      <p className="text-[10px] text-slate-600 text-center">
+                        ✓ Canadian HR standards · Reverse chronological · No discriminatory fields
+                      </p>
+                    </motion.div>
+                  )}
+
                 </motion.div>
-              )}
+              </div>
             </motion.div>
           </div>
         )}
       </div>
 
-      {/* ── PAYWALL OVERLAY ──────────────────────────────────────────────── */}
-      {/*
-        Appears when the interview is complete AND the user isn't premium.
-        A blurred overlay with a strong CTA — the user can SEE their resume
-        through the blur (creates desire) but can't download it.
-        Clicking the overlay area doesn't close it — they must use the CTA.
-      */}
+      {/* ── PAYWALL OVERLAY ────────────────────────────────────────────────── */}
       <AnimatePresence>
         {isComplete && !isPremium && (
           <motion.div
@@ -278,58 +406,59 @@ export const DocumentPreview: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.35 }}
+            transition={{ duration: 0.3 }}
           >
-            {/* Blurred backdrop */}
-            <div className="absolute inset-0 backdrop-blur-md bg-white/50 dark:bg-black/50" />
+            {/* Blurred graphite backdrop */}
+            <div className="absolute inset-0 backdrop-blur-md bg-slate-900/60" />
 
             {/* CTA card */}
             <motion.div
-              className="relative z-10 bg-white dark:bg-gray-900 rounded-3xl shadow-xl p-8 text-center max-w-xs mx-4"
-              initial={{ scale: 0.9, y: 12 }}
+              className="relative z-10 bg-slate-800 border border-slate-700 rounded-3xl shadow-2xl p-8 text-center max-w-xs mx-4"
+              initial={{ scale: 0.9, y: 16 }}
               animate={{ scale: 1,   y: 0 }}
-              transition={{ type: 'spring', stiffness: 350, damping: 28 }}
+              transition={{ type: 'spring', stiffness: 340, damping: 26 }}
             >
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mx-auto mb-4">
-                <Lock className="w-6 h-6 text-white" />
+              {/* Sparkle icon in gradient square */}
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-orange-400 to-amber-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-orange-500/30">
+                <Sparkles className="w-6 h-6 text-white" />
               </div>
 
-              <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-1.5">
+              <h3 className="text-lg font-bold text-slate-100 mb-1.5">
                 Your resume is ready!
               </h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-                Unlock PDF export and ATS optimisation
+              <p className="text-sm text-slate-400 mb-6">
+                Unlock PDF export and ATS optimisation to download your polished resume.
               </p>
 
-              {/* Primary CTA — wired to Stripe in Task 5 */}
-              <button className="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-700 hover:to-brand-800 text-white font-semibold py-3 rounded-2xl transition-all shadow-brand hover:shadow-lg active:scale-98">
+              {/* Primary CTA */}
+              <button className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold py-3 rounded-2xl transition-all shadow-lg shadow-orange-500/25 hover:shadow-orange-500/40 active:scale-[0.98]">
                 Unlock · $5 / 24h
               </button>
 
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
+              <p className="text-xs text-slate-500 mt-3">
                 Or{' '}
-                <button className="text-brand-500 hover:text-brand-700 font-medium transition-colors">
+                <button className="text-orange-400 hover:text-orange-300 font-medium transition-colors">
                   subscribe monthly
                 </button>
-                {' '}for unlimited
+                {' '}for unlimited exports
               </p>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Premium export bar ────────────────────────────────────────────── */}
+      {/* ── Premium export bar ──────────────────────────────────────────────── */}
       <AnimatePresence>
         {isComplete && isPremium && (
           <motion.div
-            className="flex-shrink-0 px-6 py-4 border-t border-gray-100 dark:border-gray-800"
+            className="flex-shrink-0 px-4 py-3 border-t border-slate-700/60"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
           >
-            <button className="w-full bg-brand-600 hover:bg-brand-700 text-white font-semibold py-3 rounded-2xl transition-colors shadow-brand">
+            <button className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold py-3 rounded-2xl transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2">
+              <FileText className="w-4 h-4" />
               Generate PDF Resume →
-              {/* TODO (Task 4): POST resumeData to /api/v1/resume/generate */}
             </button>
           </motion.div>
         )}
@@ -343,11 +472,15 @@ export const DocumentPreview: React.FC = () => {
   );
 };
 
+
 // ── Sub-component ──────────────────────────────────────────────────────────────
 
-/** Consistent section heading style across all resume sections. */
+/** Section heading: small orange uppercase label with a divider line. */
 const SectionHeading: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-gray-400 dark:text-gray-500 mb-3">
-    {children}
-  </h3>
+  <div className="flex items-center gap-3 mb-3">
+    <h3 className="text-[9px] font-bold uppercase tracking-[0.18em] text-orange-400 whitespace-nowrap">
+      {children}
+    </h3>
+    <div className="flex-1 h-px bg-slate-700/70" />
+  </div>
 );

@@ -83,6 +83,86 @@ interface DataExtractPayload {
   _scrubbed?: string[];
 }
 
+// ── Two-step validation types ─────────────────────────────────────────────────
+
+/** Mirrors EvaluateRequest in backend/routers/evaluate.py */
+interface EvaluateRequest {
+  field_type:           string;
+  proposed_edit:        string;
+  current_resume_state: Partial<ResumeData>;
+  job_description:      string;
+}
+
+/** Mirrors EvaluateResponse in backend/routers/evaluate.py */
+interface EvaluateResponse {
+  approved:    boolean;
+  reason:      string;
+  score_delta: number;
+}
+
+// ── Two-step validation helpers ───────────────────────────────────────────────
+
+/**
+ * Serialise the first meaningful value from a data_extract payload into
+ * a human-readable string for the scorer.
+ *
+ * Returns [fieldType, proposedEditString]:
+ *   { targetTitle: "Senior Engineer" }  →  ["targetTitle", "Senior Engineer"]
+ *   { skills: ["React", "Python"] }     →  ["skills", "React, Python"]
+ *   { experiences: [{ ... }] }          →  ["experiences", JSON of first entry]
+ */
+function serializeProposedEdit(data: Partial<ResumeData>): [string, string] {
+  const entries = Object.entries(data);
+  if (entries.length === 0) return ['unknown', ''];
+
+  const [key, value] = entries[0];
+
+  if (typeof value === 'string') {
+    return [key, value];
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [key, ''];
+    // String arrays (skills) → comma-separated
+    if (typeof value[0] === 'string') {
+      return [key, (value as string[]).join(', ')];
+    }
+    // Object arrays (experiences, education) → JSON of first entry, compact
+    return [key, JSON.stringify(value[0])];
+  }
+  return [key, JSON.stringify(value)];
+}
+
+/**
+ * Call POST /api/evaluate-edit to score a proposed resume addition.
+ *
+ * Returns the evaluation verdict.  Throws on network error so the caller
+ * can fail-open (approve the edit and let the interview continue).
+ */
+async function callEvaluateEdit(
+  data:               Partial<ResumeData>,
+  currentResumeState: Partial<ResumeData>,
+  signal?:            AbortSignal,
+): Promise<EvaluateResponse> {
+  const [fieldType, proposedEdit] = serializeProposedEdit(data);
+
+  const body: EvaluateRequest = {
+    field_type:           fieldType,
+    proposed_edit:        proposedEdit,
+    current_resume_state: currentResumeState,
+    job_description:      '',   // not yet wired to a JD — future Task 6
+  };
+
+  const res = await fetch('/api/evaluate-edit', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) throw new Error(`Evaluate API ${res.status}`);
+  return res.json() as Promise<EvaluateResponse>;
+}
+
 // ── Haptic feedback helper ────────────────────────────────────────────────────
 
 /**
@@ -136,6 +216,12 @@ export const ChatPanel: React.FC = () => {
   // When speech recognition runs, the new transcript is APPENDED to this
   // base text (so existing typed text is preserved).
   const baseSpeechTextRef = useRef('');
+
+  // Two-step validation: if the scorer rejects an edit, we store the reason
+  // here and emit it as a follow-up Mac message in the `done` case.
+  // Using a ref (not state) so the `done` handler can read it synchronously
+  // without triggering an extra re-render.
+  const rejectionMessageRef = useRef<string | null>(null);
 
   // ── Store subscriptions ──────────────────────────────────────────────────────
   const currentStep      = useAppStore((s) => s.currentStep);
@@ -358,38 +444,71 @@ export const ChatPanel: React.FC = () => {
               break;
             }
 
-            // ── data_extract — structured resume update + step control ───
+            // ── data_extract — two-step validation + resume update ───────
+            //
+            // Flow:
+            //   1. HR scrub check → warning state if forbidden fields removed
+            //   2. If data is non-empty → call POST /api/evaluate-edit
+            //       approved  → commit to store + haptic flash
+            //       rejected  → store reason; emit as follow-up Mac message
+            //   3. Advance step only if data was approved (or there was no data)
+            //
+            // This `await` is valid here because `handleSend` is async and the
+            // SSE reader loop is inside an `async` function.  The reader simply
+            // waits for the evaluate call before processing the `done` event.
             case 'data_extract': {
               const extracted = payload as unknown as DataExtractPayload;
 
-              // ── Check for forbidden HR field scrubbing ─────────────────
-              // If the backend's _scrub_forbidden_fields() removed something,
-              // trigger the warning state and haptic pattern for 2 s.
+              // ── HR scrub warning ───────────────────────────────────────
               if (extracted._scrubbed && extracted._scrubbed.length > 0) {
                 triggerWarning();
-                // Distinct pattern for warning: single long buzz rather than
-                // the success double-tap — feels different in the hand.
                 hapticFeedback([60]);
               }
 
-              // ── Merge validated resume data into the store ─────────────
-              if (extracted.data && Object.keys(extracted.data).length > 0) {
-                updateResumeData(extracted.data);
+              // ── Two-step ATS validation ────────────────────────────────
+              let dataApproved = true; // default: no data = nothing to validate
 
-                // ── Haptic feedback: validated data added ─────────────────
-                // Fire ONLY when real data arrives (not on an empty data: {}).
-                // The [10, 30, 10] double-pulse signals "your answer was saved"
-                // — gives the user tactile confirmation even when they're not
-                // looking at the screen (common when speaking via mic).
-                hapticFeedback([10, 30, 10]);
+              if (extracted.data && Object.keys(extracted.data).length > 0) {
+                // Snapshot current state BEFORE any mutations — the scorer
+                // needs it to detect duplicates against the existing resume.
+                const currentState = useAppStore.getState().resumeData;
+
+                try {
+                  const evaluation = await callEvaluateEdit(
+                    extracted.data,
+                    currentState,
+                    abortRef.current?.signal,
+                  );
+
+                  if (evaluation.approved) {
+                    // ── Approved: commit to store + double-tap haptic ────
+                    updateResumeData(extracted.data);
+                    hapticFeedback([10, 30, 10]);
+                  } else {
+                    // ── Rejected: store reason to emit after the turn ────
+                    // We don't commit the data or fire haptic.
+                    // Mac's follow-up message appears after the current SSE
+                    // turn completes — it's a separate second message bubble.
+                    dataApproved = false;
+                    rejectionMessageRef.current =
+                      `I didn't add that to your resume just yet. ` +
+                      `${evaluation.reason} ` +
+                      `Could you give me more specific details — for example, ` +
+                      `a percentage, dollar amount, or timeframe?`;
+                  }
+                } catch (evalErr) {
+                  // Fail-open: network error / AbortError
+                  if ((evalErr as Error)?.name !== 'AbortError') {
+                    // Score service unavailable — commit anyway so interview
+                    // is never blocked by a secondary service.
+                    updateResumeData(extracted.data);
+                    hapticFeedback([10, 30, 10]);
+                  }
+                }
               }
 
-              // ── Advance the interview state machine ────────────────────
-              // `advance: true` means "I have what I need for this step;
-              // move to the next one."  We advance AFTER merging data so
-              // DocumentPreview reflects the new data before the step label
-              // in the TopBar updates.
-              if (extracted.advance === true) {
+              // ── Advance the state machine (only if data was approved) ──
+              if (extracted.advance === true && dataApproved) {
                 advanceStep();
               }
               break;
@@ -399,6 +518,12 @@ export const ChatPanel: React.FC = () => {
             case 'done': {
               if (accumulated.trim()) {
                 addMessage({ role: 'assistant', content: accumulated.trim() });
+              }
+              // If the scorer rejected an edit, emit Mac's explanation as a
+              // follow-up message immediately after the main turn message.
+              if (rejectionMessageRef.current) {
+                addMessage({ role: 'assistant', content: rejectionMessageRef.current });
+                rejectionMessageRef.current = null;
               }
               cleanup();
               break;
