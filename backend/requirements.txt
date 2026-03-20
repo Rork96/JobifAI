@@ -36,6 +36,24 @@ stripe==9.11.0
 #   • Token counting and safety filter parsing
 google-generativeai==0.8.3
 
+# ── Document parsing (Task 7: resume upload) ──────────────────
+# PyMuPDF — fastest PDF text extractor; ARM64 wheels on PyPI.
+# Imports as `fitz`.  Handles multi-column layouts better than
+# pdfminer because it uses the PDF rendering engine to reconstruct
+# reading order via the `sort=True` flag on get_text().
+PyMuPDF==1.24.2
+
+# python-docx — standard DOCX parser.  We extract paragraphs
+# AND table cells because many resumes use invisible tables for
+# two-column layout.  Imports as `docx`.
+python-docx==1.1.2
+
+# ── Web scraping (Task 7: job description fetching) ───────────
+# BeautifulSoup4 — HTML parsing / content extraction.
+# We use the lxml backend (faster than html.parser, handles broken HTML).
+beautifulsoup4==4.12.3
+lxml==5.2.2
+
 # ──────────────────────────────────────────────────────────────
 # Why these choices?
 #   • fastapi + uvicorn  → async I/O matters when awaiting multiple AI calls

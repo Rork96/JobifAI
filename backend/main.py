@@ -28,6 +28,8 @@ import google.generativeai as genai        # Gemini SDK — configured at startu
 from .config import Settings, get_settings  # typed settings — see config.py
 from .routers import evaluate               # Task 5: ATS edit scorer endpoint
 from .routers import interview               # Task 3: AI interview SSE endpoint
+from .routers import job                    # Task 7: Job description scraper endpoint
+from .routers import upload                 # Task 7: Resume file upload + parser endpoint
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Use Python's stdlib logger so output lands in Docker logs (stdout/stderr).
@@ -151,6 +153,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # include it without an extra prefix here.
     app.include_router(interview.router)  # POST /api/chat/interview (SSE)
     app.include_router(evaluate.router)   # POST /api/evaluate-edit (ATS scorer)
+    app.include_router(upload.router)     # POST /api/upload-resume (file parser)
+    app.include_router(job.router)        # POST /api/parse-job (JD scraper)
     # Future routers:
     #   app.include_router(auth.router)      # /api/auth
     #   app.include_router(resume.router)    # /api/resume
