@@ -37,6 +37,7 @@ from google.generativeai.types import HarmBlockThreshold, HarmCategory
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
+from ..services.embeddings import calculate_ats_score
 
 logger = logging.getLogger("jobifai.evaluate")
 
@@ -118,6 +119,31 @@ class EvaluateResponse(BaseModel):
     score_delta: int  = Field(..., ge=-5, le=5, description="Estimated ATS score impact")
 
 
+# ─── ATS Score Models ──────────────────────────────────────────────────────────
+
+class AtsScoreRequest(BaseModel):
+    """
+    Resume text + job description to compare semantically.
+    Both fields accept plain text (already extracted by the upload / parse-job endpoints).
+    """
+    resume_text:     str = Field(..., min_length=10, description="Plain text of the resume")
+    job_description: str = Field(default="",         description="Plain text of the job posting")
+
+
+class AtsScoreResponse(BaseModel):
+    """
+    Result of the semantic ATS match calculation.
+
+    score:       0–100 integer.  Reflects cosine similarity rescaled to a
+                 user-readable percentage.  Below 50 = poor match.
+    skill_gaps:  Specific keywords/tools present in the JD but absent from
+                 the resume.  Each item is a concrete string the user can
+                 add verbatim to improve their ATS pass rate.
+    """
+    score:      int        = Field(..., ge=0, le=100)
+    skill_gaps: list[str]  = Field(default_factory=list)
+
+
 # ─── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post(
@@ -152,7 +178,7 @@ async def evaluate_edit(
     genai.configure(api_key=settings.gemini_api_key)
 
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="gemini-2.5-flash",
         system_instruction=_SCORER_SYSTEM,
         generation_config=genai.types.GenerationConfig(
             temperature=0.0,       # deterministic — same input → same verdict
@@ -227,3 +253,60 @@ async def evaluate_edit(
             reason="Evaluation service unavailable — edit approved by default.",
             score_delta=0,
         )
+
+
+# ─── ATS Score Endpoint ────────────────────────────────────────────────────────
+
+@router.post(
+    "/ats-score",
+    response_model=AtsScoreResponse,
+    summary="Calculate semantic ATS match score between resume and job description",
+    description="""
+Embeds the resume and job description using Google **text-embedding-004**, then
+measures their cosine similarity to produce a 0–100 ATS match percentage.
+
+Also returns a `skill_gaps` list: keywords required by the JD that are absent
+from the resume — each item is a specific string the user should add.
+
+**Math overview:**
+- Cosine similarity = (A · B) / (‖A‖ × ‖B‖)
+- Raw range ~[0.30, 0.90] is rescaled linearly to [0%, 100%]
+- < 50: poor match · 50–80: moderate · > 80: strong match
+    """,
+)
+async def ats_score(
+    body: AtsScoreRequest,
+    settings: Settings = Depends(get_settings),
+) -> AtsScoreResponse:
+    """
+    POST /api/ats-score — Semantic ATS match scoring.
+
+    Delegates to embeddings.calculate_ats_score() which runs two concurrent
+    embedding calls then a Gemini skill-gap analysis.
+
+    Fail-safe: on any error, returns score=0 with an empty skill_gaps list
+    so the frontend can still proceed without crashing.
+    """
+    genai.configure(api_key=settings.gemini_api_key)
+
+    try:
+        result = await calculate_ats_score(
+            resume_text=body.resume_text,
+            job_description=body.job_description,
+        )
+        logger.info(
+            "ATS score endpoint — score=%d  gaps=%d",
+            result["score"],
+            len(result["skill_gaps"]),
+        )
+        return AtsScoreResponse(
+            score=result["score"],
+            skill_gaps=result["skill_gaps"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ATS score endpoint error (fail-safe) — %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return AtsScoreResponse(score=0, skill_gaps=[])

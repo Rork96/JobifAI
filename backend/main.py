@@ -30,6 +30,8 @@ from .routers import evaluate               # Task 5: ATS edit scorer endpoint
 from .routers import interview               # Task 3: AI interview SSE endpoint
 from .routers import job                    # Task 7: Job description scraper endpoint
 from .routers import upload                 # Task 7: Resume file upload + parser endpoint
+from .routers import resumes                # Task 9: Resume save/load persistence
+from .routers import payments               # Task 9: Stripe checkout + webhook
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Use Python's stdlib logger so output lands in Docker logs (stdout/stderr).
@@ -60,7 +62,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     # The ai_service module calls `genai.GenerativeModel()` per-request, so
     # this must run before any request is served.
     genai.configure(api_key=settings.gemini_api_key)
-    logger.info("🤖  Gemini AI configured — model=gemini-1.5-flash")
+    logger.info("🤖  Gemini AI configured — model=gemini-2.5-flash")
 
     # TODO (Task 4): initialise Supabase client and attach to app.state
     # TODO (Task 5): register Stripe webhook secret
@@ -155,10 +157,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(evaluate.router)   # POST /api/evaluate-edit (ATS scorer)
     app.include_router(upload.router)     # POST /api/upload-resume (file parser)
     app.include_router(job.router)        # POST /api/parse-job (JD scraper)
+    app.include_router(resumes.router)    # POST /api/resumes, GET /api/resumes/{id}
+    app.include_router(payments.router)   # POST /api/checkout, POST /api/webhooks/stripe
     # Future routers:
     #   app.include_router(auth.router)      # /api/auth
-    #   app.include_router(resume.router)    # /api/resume
-    #   app.include_router(billing.router)   # /api/billing
 
     # ── Core routes (inline for now) ─────────────────────────────────────────
     @app.get("/health", tags=["ops"])

@@ -219,6 +219,10 @@ export interface ChatMessage {
  *   warning    — backend scrubbed a forbidden HR field; head-shake + amber glow
  *
  * State priority order (highest → lowest):
- *   warning > listening > processing > talking > idle
+ *   warning > shocked > success > listening > processing > talking > idle
+ *
+ * NEW in Task 8:
+ *   shocked — ATS score < 50; red crimson shake + 😱 emoji (score reveal drama)
+ *   success — ATS score > 80; gold/green celebration + ✨ emoji
  */
-export type MascotState = 'idle' | 'listening' | 'processing' | 'talking' | 'warning';
+export type MascotState = 'idle' | 'listening' | 'processing' | 'talking' | 'warning' | 'shocked' | 'success';

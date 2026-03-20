@@ -58,6 +58,7 @@ import {
 } from '@/types';
 import { MacMascot } from '@/components/mascot/MacMascot';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
+import { BYOK_STORAGE_KEY } from '@/components/paywall/BYOKModal';
 
 // ── API types ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ interface InterviewRequestBody {
   conversation_history: Array<{ role: 'user' | 'assistant'; content: string }>;
   resume_data_context:  Partial<ResumeData>;
   byok_api_key?:        string;
+  /** Optional: when set, Mac tailors questions to the JD's skills and keywords. */
+  job_description?:     string;
 }
 
 /** Parsed payload of a `data_extract` SSE event (mirrors ai_service.py output). */
@@ -145,11 +148,15 @@ async function callEvaluateEdit(
 ): Promise<EvaluateResponse> {
   const [fieldType, proposedEdit] = serializeProposedEdit(data);
 
+  // Read JD directly from store — callEvaluateEdit is a module-level function
+  // (not a hook) so we use getState() rather than a useAppStore selector.
+  const jobDescription = useAppStore.getState().jobDescription ?? '';
+
   const body: EvaluateRequest = {
     field_type:           fieldType,
     proposed_edit:        proposedEdit,
     current_resume_state: currentResumeState,
-    job_description:      '',   // not yet wired to a JD — future Task 6
+    job_description:      jobDescription,
   };
 
   const res = await fetch('/api/evaluate-edit', {
@@ -230,6 +237,8 @@ export const ChatPanel: React.FC = () => {
   const userLang         = useAppStore((s) => s.userLang);
   const resumeLang       = useAppStore((s) => s.resumeLang);
   const resumeData       = useAppStore((s) => s.resumeData);
+  // Job description from onboarding — Mac uses this to tailor interview questions.
+  const jobDescription   = useAppStore((s) => s.jobDescription);
 
   // Actions — Zustand guarantees stable references; safe in dependency arrays.
   const addMessage       = useAppStore((s) => s.addMessage);
@@ -377,6 +386,10 @@ export const ChatPanel: React.FC = () => {
       finished = true;
     };
 
+    // Read BYOK key from localStorage on every send — picked up immediately
+    // after the user enters it in BYOKModal, no page reload required.
+    const byokKey = localStorage.getItem(BYOK_STORAGE_KEY) ?? undefined;
+
     const body: InterviewRequestBody = {
       user_message:         trimmed,
       current_step:         step,
@@ -387,6 +400,12 @@ export const ChatPanel: React.FC = () => {
         content: m.content,
       })),
       resume_data_context: ctxData,
+      // BYOK: if user supplied their own Gemini key, pass it to the backend.
+      // The backend uses it instead of the server-side GEMINI_API_KEY env var.
+      ...(byokKey ? { byok_api_key: byokKey } : {}),
+      // Pass the JD from onboarding so Mac's system prompt includes the job context.
+      // undefined → omitted from JSON (backend treats null/missing as "no JD").
+      ...(jobDescription ? { job_description: jobDescription } : {}),
     };
 
     try {

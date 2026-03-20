@@ -24,6 +24,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { MainLayout }     from '@/layouts/MainLayout';
 import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
 import { PaywallModal }   from '@/components/paywall/PaywallModal';
+import { useAuth }        from '@/hooks/useAuth';
 
 // ─── Screen type ──────────────────────────────────────────────────────────────
 type Screen = 'onboarding' | 'paywall' | 'workspace';
@@ -52,8 +53,27 @@ const screenTransition = {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 const App: React.FC = () => {
-  const [screen,    setScreen]    = useState<Screen>('onboarding');
+  // Detect Stripe return URL (?checkout=success) and jump straight to workspace.
+  // The webhook fires asynchronously — we optimistically show workspace; the
+  // is_premium flag will sync on next auth state change / page refresh.
+  const checkoutParam = new URLSearchParams(window.location.search).get('checkout');
+  const initialScreen: Screen = checkoutParam === 'success' ? 'workspace' : 'onboarding';
+
+  const [screen,    setScreen]    = useState<Screen>(initialScreen);
   const [direction, setDirection] = useState(1); // +1 = forward, -1 = back
+
+  // Clean up the ?checkout= param from the URL so a refresh doesn't re-trigger
+  React.useEffect(() => {
+    if (checkoutParam) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('checkout');
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Initialise Supabase auth listener once at the app root.
+  // This restores any existing session and keeps the Zustand store in sync.
+  const auth = useAuth();
 
   const goTo = (next: Screen) => {
     const order: Screen[] = ['onboarding', 'paywall', 'workspace'];
@@ -97,7 +117,7 @@ const App: React.FC = () => {
              * The workspace renders underneath so the paywall modal floats
              * over a real (blurred) preview of the tool — adds desire.
              */}
-            <MainLayout />
+            <MainLayout auth={auth} />
             <PaywallModal onAccessGranted={() => goTo('workspace')} />
           </motion.div>
         )}
@@ -113,7 +133,7 @@ const App: React.FC = () => {
             transition={screenTransition}
             className="absolute inset-0"
           >
-            <MainLayout />
+            <MainLayout auth={auth} />
           </motion.div>
         )}
       </AnimatePresence>

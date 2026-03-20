@@ -35,8 +35,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, Lock, CheckCircle2, Sparkles } from 'lucide-react';
+import { FileText, Lock, CheckCircle2, Sparkles, Download, Loader2 } from 'lucide-react';
 import { useAppStore, selectIsInterviewComplete } from '@/store/useAppStore';
+import { BYOK_STORAGE_KEY } from '@/components/paywall/BYOKModal';
+import type { ResumeData } from '@/types';
 
 // ── Section-fade preset ───────────────────────────────────────────────────────
 /** Each resume section slides in from slightly below when it first appears. */
@@ -57,6 +59,71 @@ export const DocumentPreview: React.FC = () => {
   const isPremium   = useAppStore((s) => s.isPremium);
   const isComplete  = useAppStore(selectIsInterviewComplete);
   const currentStep = useAppStore((s) => s.currentStep);
+
+  // BYOK users brought their own Gemini key → treat them as premium (they paid
+  // with their API quota, not our Stripe paywall).  Read on each render so the
+  // overlay disappears the instant the user enters their key in BYOKModal.
+  const hasByokKey  = Boolean(localStorage.getItem(BYOK_STORAGE_KEY));
+
+  // User is "unlocked" if they paid via Stripe OR supplied a BYOK key
+  const isUnlocked  = isPremium || hasByokKey;
+
+  // User email from auth (may be null for anonymous BYOK users)
+  const userEmail   = useAppStore((s) => s.user?.email);
+
+  // ── PDF Generation ───────────────────────────────────────────────────────
+  // State tracks whether a PDF build is in progress (can take 0.5–2 s depending
+  // on resume length and device).
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [pdfError,        setPdfError]        = useState('');
+
+  /**
+   * Generates the PDF client-side using @react-pdf/renderer and triggers a
+   * browser file download.
+   *
+   * WHY dynamic import?
+   *   @react-pdf/renderer adds ~520 kB to the bundle.  Lazy-loading it means
+   *   every user who hasn't completed the interview (i.e. the vast majority
+   *   of page-loads) never downloads that code.  It's fetched only when the
+   *   user clicks "Download PDF".
+   */
+  const handleDownloadPdf = async () => {
+    if (isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
+    setPdfError('');
+
+    try {
+      // Dynamic imports — only loaded when the user actually clicks Download
+      const [{ pdf }, { ResumePDF }] = await Promise.all([
+        import('@react-pdf/renderer'),
+        import('./ResumePDF'),
+      ]);
+
+      const doc  = <ResumePDF data={resumeData as ResumeData} userEmail={userEmail} />;
+      const blob = await pdf(doc).toBlob();
+
+      // Build a safe filename: "Senior_Dev_JobifAI.pdf"
+      const safeName = (resumeData.targetTitle ?? 'resume')
+        .replace(/[^a-zA-Z0-9\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '_');
+
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
+      a.href     = url;
+      a.download = `${safeName}_JobifAI.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+    } catch (err) {
+      console.error('[ResumePDF] generation failed:', err);
+      setPdfError('PDF generation failed. Please try again.');
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
 
   const hasContent = Object.values(resumeData).some((v) =>
     v !== undefined && v !== '' && (Array.isArray(v) ? v.length > 0 : true),
@@ -136,7 +203,7 @@ export const DocumentPreview: React.FC = () => {
               Complete
             </motion.div>
           )}
-          {isComplete && !isPremium && (
+          {isComplete && !isUnlocked && (
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -400,7 +467,7 @@ export const DocumentPreview: React.FC = () => {
 
       {/* ── PAYWALL OVERLAY ────────────────────────────────────────────────── */}
       <AnimatePresence>
-        {isComplete && !isPremium && (
+        {isComplete && !isUnlocked && (
           <motion.div
             className="absolute inset-0 flex items-center justify-center z-20"
             initial={{ opacity: 0 }}
@@ -447,19 +514,59 @@ export const DocumentPreview: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* ── Premium export bar ──────────────────────────────────────────────── */}
+      {/* ── Export bar (unlocked users only) ──────────────────────────────── */}
       <AnimatePresence>
-        {isComplete && isPremium && (
+        {isComplete && isUnlocked && (
           <motion.div
-            className="flex-shrink-0 px-4 py-3 border-t border-slate-700/60"
+            className="flex-shrink-0 px-4 py-3 border-t border-slate-700/60 space-y-2"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
           >
-            <button className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold py-3 rounded-2xl transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2">
-              <FileText className="w-4 h-4" />
-              Generate PDF Resume →
+            {/* PDF download button */}
+            <button
+              onClick={handleDownloadPdf}
+              disabled={isGeneratingPdf}
+              className={[
+                'w-full font-semibold py-3 rounded-2xl transition-all',
+                'flex items-center justify-center gap-2 text-sm',
+                'shadow-lg shadow-orange-500/25',
+                isGeneratingPdf
+                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white hover:shadow-orange-500/40 active:scale-[0.98]',
+              ].join(' ')}
+            >
+              {isGeneratingPdf ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Building PDF…
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  Download ATS-Optimised PDF
+                </>
+              )}
             </button>
+
+            {/* Error message */}
+            <AnimatePresence>
+              {pdfError && (
+                <motion.p
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="text-xs text-red-400 text-center"
+                >
+                  {pdfError}
+                </motion.p>
+              )}
+            </AnimatePresence>
+
+            {/* Fine-print: what the PDF includes */}
+            <p className="text-[10px] text-slate-600 text-center">
+              Helvetica · 1-inch margins · ATS text layer · Canadian HR standards
+            </p>
           </motion.div>
         )}
       </AnimatePresence>

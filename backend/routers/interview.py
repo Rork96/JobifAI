@@ -154,6 +154,17 @@ class InterviewRequest(BaseModel):
         description="Previously extracted resume fields (passed for model context).",
     )
 
+    # Optional target job description — when provided, Mac tailors its interview
+    # questions to the JD's specific keywords, skills, and requirements.
+    # This is the key differentiator between generic resume building and
+    # ATS-targeted resume optimisation.
+    job_description: str | None = Field(
+        default=None,
+        max_length=10_000,
+        description="Optional: target job posting text.  Mac uses this to guide "
+                    "interview questions toward the JD's specific skill requirements.",
+    )
+
     model_config = {"json_schema_extra": {
         "example": {
             "user_message": "I was a Senior Developer at Shopify from 2021 to 2023.",
@@ -269,12 +280,13 @@ async def interview_turn(
         user_message = f"{context_hint}\n\nUser message: {user_message}"
 
     logger.info(
-        "Interview turn — step=%s lang=%s→%s history_len=%d byok=%s",
+        "Interview turn — step=%s lang=%s→%s history_len=%d byok=%s jd=%s",
         body.current_step,
         body.user_lang,
         body.resume_lang,
         len(history),
         bool(body.byok_api_key),
+        f"{len(body.job_description)} chars" if body.job_description else "none",
     )
 
     async def event_generator():
@@ -294,6 +306,7 @@ async def interview_turn(
                 user_lang=body.user_lang,
                 resume_lang=body.resume_lang,
                 history=history,
+                job_description=body.job_description,
             ):
                 yield sse_event
         except Exception:  # noqa: BLE001
@@ -331,6 +344,6 @@ async def interview_health(settings: Settings = Depends(get_settings)) -> dict:
     return {
         "status":    "ok" if has_key else "degraded",
         "ai_key":    "configured" if has_key else "missing",
-        "model":     "gemini-1.5-flash",
+        "model":     "gemini-2.5-flash",
         "byok":      "supported",
     }

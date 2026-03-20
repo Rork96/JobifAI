@@ -1,0 +1,215 @@
+# =============================================================================
+# docker-compose.prod.yml — Production Stack for Raspberry Pi 5 (ARM64)
+# =============================================================================
+#
+# ARCHITECTURE
+# ────────────
+#
+#   Internet (port 80/443)
+#       │
+#       ▼
+#   ┌─────────┐    HTTP (:8000)    ┌──────────────┐
+#   │  nginx  │ ─────────────────► │   backend    │
+#   │  :443   │    HTTP (:80)      │  (FastAPI)   │
+#   │ (SSL)   │ ─────────────────► │──────────────│
+#   └─────────┘                    │   frontend   │
+#       │                          │  (React SPA) │
+#       └── certbot (cert renewal) └──────────────┘
+#
+# All services communicate on the internal "jobifai" bridge network.
+# Only nginx exposes ports to the host (80 and 443).
+#
+# PRE-REQUISITES
+# ──────────────
+# 1. DNS: cv.wealthifai.xyz → your Pi's public IP (or Cloudflare Proxy)
+# 2. Port forwarding: router 80→Pi:80, 443→Pi:443
+# 3. .env file at repo root (copy .env.example and fill in secrets)
+# 4. First run: obtain SSL certificate (see HTTPS SETUP below)
+#
+# HTTPS SETUP (first time only)
+# ──────────────────────────────
+# STEP 1 — Bring up nginx in HTTP-only mode to pass the ACME challenge:
+#
+#   docker compose -f docker-compose.prod.yml up nginx -d
+#
+# STEP 2 — Request the certificate (replace email with yours):
+#
+#   docker compose -f docker-compose.prod.yml run --rm certbot certonly \
+#     --webroot --webroot-path=/var/www/certbot \
+#     --email your@email.com \
+#     --agree-tos --no-eff-email \
+#     -d cv.wealthifai.xyz
+#
+# STEP 3 — Bring up the full stack:
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# STEP 4 — Enable auto-renewal (runs every 12 h via the certbot service):
+#   Already handled — the certbot service below runs `certbot renew` in a loop.
+#
+# DEPLOYMENT (subsequent deploys)
+# ────────────────────────────────
+#   git pull
+#   docker compose -f docker-compose.prod.yml build --no-cache
+#   docker compose -f docker-compose.prod.yml up -d --force-recreate
+#
+# CLOUDFLARE TUNNEL ALTERNATIVE (no port forwarding required)
+# ────────────────────────────────────────────────────────────
+# If your Pi is behind a strict NAT (e.g. CGNAT from your ISP), use a
+# Cloudflare Tunnel instead of Nginx + Certbot:
+#
+#   1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+#      ARM64 (Pi 5): wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+#                    sudo dpkg -i cloudflared-linux-arm64.deb
+#
+#   2. Authenticate: cloudflared tunnel login
+#
+#   3. Create tunnel: cloudflared tunnel create jobifai
+#
+#   4. Create config file ~/.cloudflared/config.yml:
+#        tunnel: <TUNNEL_ID>
+#        credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+#        ingress:
+#          - hostname: cv.wealthifai.xyz
+#            service: http://localhost:80         ← nginx HTTP port
+#          - service: http_status:404
+#
+#   5. Add to docker-compose.prod.yml (uncomment the cloudflared service below)
+#      and REMOVE the nginx ports: ["80:80", "443:443"] section.
+#
+#   With Cloudflare Tunnel:
+#     • No router port forwarding needed
+#     • TLS is handled by Cloudflare at the edge (free)
+#     • DDoS protection included
+#     • Works behind CGNAT
+# =============================================================================
+
+name: jobifai-prod
+
+# ── Shared env ────────────────────────────────────────────────────────────────
+x-common-env: &common-env
+  env_file: .env
+
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  backend:
+    <<: *common-env
+    build:
+      context:  ./backend
+      platforms:
+        - linux/arm64    # Raspberry Pi 5 native — no QEMU emulation
+    image: jobifai-backend:prod
+    restart: unless-stopped
+    networks: [internal]
+    # No ports exposed to host — nginx proxies to backend:8000 on the
+    # internal network.  The service is unreachable from the internet directly.
+    expose:
+      - "8000"
+    healthcheck:
+      test:     ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+      start_period: 20s
+    # Memory limit — Pi 5 has 8 GB but we cap the backend at 512 MB to leave
+    # headroom for the OS, frontend, and other services.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── React frontend (built as static files, served by nginx) ─────────────────
+  frontend:
+    build:
+      context:    ./frontend
+      dockerfile: Dockerfile.prod
+      platforms:
+        - linux/arm64
+      args:
+        # VITE_* vars must be passed at build time (baked into the JS bundle).
+        # They come from .env via docker compose's variable interpolation.
+        VITE_SUPABASE_URL:      ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    image: jobifai-frontend:prod
+    restart: unless-stopped
+    networks: [internal]
+    expose:
+      - "80"
+    deploy:
+      resources:
+        limits:
+          memory: 64M    # Nginx serving static files barely uses any RAM
+
+  # ── Nginx: SSL terminator + reverse proxy ────────────────────────────────────
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    ports:
+      - "80:80"      # HTTP (ACME challenge + redirect to HTTPS)
+      - "443:443"    # HTTPS (TLS-terminated here)
+    volumes:
+      # Our custom nginx config
+      - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # Let's Encrypt certificates (written by certbot service)
+      - ./nginx/certbot/conf:/etc/letsencrypt:ro
+      # ACME challenge webroot (certbot writes here; nginx serves it on :80)
+      - ./nginx/certbot/www:/var/www/certbot:ro
+    networks: [internal, external]
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+    healthcheck:
+      test:     ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+
+  # ── Certbot: automatic TLS certificate renewal ───────────────────────────────
+  certbot:
+    image: certbot/certbot:latest   # Multi-arch: works on ARM64
+    restart: unless-stopped
+    volumes:
+      - ./nginx/certbot/conf:/etc/letsencrypt
+      - ./nginx/certbot/www:/var/www/certbot
+    # Renew every 12 h (Let's Encrypt certs expire every 90 days).
+    # certbot renew is a no-op if the cert is not due for renewal yet.
+    entrypoint: >
+      /bin/sh -c "
+        trap exit TERM;
+        while :; do
+          certbot renew --quiet --webroot --webroot-path=/var/www/certbot;
+          sleep 12h & wait $${!};
+        done
+      "
+    networks: [internal]
+
+  # ── Cloudflare Tunnel (UNCOMMENT if using tunnel instead of nginx SSL) ───────
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}   # from .env
+  #   networks: [internal, external]
+  #   depends_on: [nginx]
+  # NOTE: If using cloudflared, remove ports: from the nginx service above and
+  # point the tunnel to http://nginx:80 (not localhost).
+
+# ── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    # Backend, frontend, and certbot communicate here.
+    # Not reachable from the host or internet.
+    driver:   bridge
+    internal: true
+  external:
+    # Only nginx (and optionally cloudflared) are attached here.
+    # This is the network that can reach the internet.
+    driver: bridge

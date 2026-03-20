@@ -110,7 +110,7 @@ FORBIDDEN_HR_FIELDS: frozenset[str] = frozenset({
 #   • 3–5× lower latency than Pro (critical for real-time typewriter effect)
 #   • Sufficiently capable for structured interview extraction
 #   • ~10× cheaper (important at PLG scale)
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 # ─── System Prompt ─────────────────────────────────────────────────────────────
@@ -271,6 +271,7 @@ Follow the behaviour for your current step EXACTLY:
   Congratulate the user warmly. Tell them their resume data is complete and \
   they can now generate their polished PDF. Set advance: false (terminal state).
 
+{jd_section}
 ════════════════════════════════════════════════════════
 RULE 5 — OUTPUT FORMAT  (NON-NEGOTIABLE — FOLLOW EXACTLY)
 ════════════════════════════════════════════════════════
@@ -320,6 +321,7 @@ def build_system_prompt(
     user_lang: str,
     resume_lang: str,
     current_step: InterviewStep,
+    job_description: str | None = None,
 ) -> str:
     """
     Render the system prompt template for a specific conversation turn.
@@ -327,11 +329,15 @@ def build_system_prompt(
     We rebuild the system prompt per-turn (not per-session) because:
       • current_step changes as the interview progresses
       • We want the model to follow step-specific behaviour precisely
+      • job_description can change between sessions
 
     Args:
-        user_lang:    BCP-47 code of the language Mac should speak in.
-        resume_lang:  BCP-47 code of the language for extracted data.
-        current_step: Current position in the interview state machine.
+        user_lang:       BCP-47 code of the language Mac should speak in.
+        resume_lang:     BCP-47 code of the language for extracted data.
+        current_step:    Current position in the interview state machine.
+        job_description: Optional target job posting text.  When provided,
+                         Mac tailors its questions to the JD's keywords and
+                         requirements.
 
     Returns:
         Fully rendered system prompt string.
@@ -339,11 +345,47 @@ def build_system_prompt(
     user_lang_name   = LANGUAGE_NAMES.get(user_lang,   user_lang)
     resume_lang_name = LANGUAGE_NAMES.get(resume_lang, resume_lang)
 
+    # ── Build the optional JD context section ──────────────────────────────────
+    # WHY: When a user provides a job posting, Mac should steer the interview
+    # toward the skills and keywords the ATS will look for.  Without this
+    # context, Mac asks generic questions that may miss the specific stack in
+    # the JD (e.g., "Kubernetes" vs. "container orchestration").
+    #
+    # SAFETY: User-supplied JD text may contain literal `{` or `}` characters
+    # (e.g., JSON examples, code snippets).  We must escape them before
+    # passing to str.format() or the template engine will raise KeyError.
+    if job_description and job_description.strip():
+        # Truncate to 3,000 chars — the JD section is context, not the main actor.
+        # The first 3k chars always contain the requirements and responsibilities.
+        #
+        # NOTE: NO curly-brace escaping needed here.  `jd_section` is passed as
+        # a *value* to str.format(), not as part of the template.  Python's
+        # str.format() processes the template string exactly once and never
+        # re-parses substituted values, so `{foo}` inside the JD text is safe.
+        safe_jd = job_description[:3_000]
+        jd_section = (
+            "════════════════════════════════════════════════════════\n"
+            "RULE 4b — TARGET JOB DESCRIPTION  (USE THIS TO GUIDE YOUR INTERVIEW)\n"
+            "════════════════════════════════════════════════════════\n"
+            "The user is applying for a specific role. You MUST use the JD below to:\n\n"
+            "  • Prioritise the skills, tools, and certifications mentioned in the JD.\n"
+            "  • Ask targeted questions to uncover experience with JD-specific technologies.\n"
+            "  • Mirror the JD's exact terminology in extracted data — if the JD says\n"
+            "    'Kubernetes', write 'Kubernetes', NOT 'container orchestration'.\n"
+            "  • Ensure every hard skill required by the JD is explored in the interview.\n"
+            "  • When writing responsibility bullets, use language the JD's ATS will match.\n\n"
+            f"TARGET JOB DESCRIPTION (first 3,000 chars):\n{safe_jd}\n"
+            "────────────────────────────────────────────────────────────────────────────\n"
+        )
+    else:
+        jd_section = ""
+
     return _SYSTEM_PROMPT_TEMPLATE.format(
         user_lang_name=user_lang_name,
         resume_lang_name=resume_lang_name,
         current_step=current_step,
         sentinel=SENTINEL,
+        jd_section=jd_section,
     )
 
 
@@ -354,6 +396,7 @@ def _build_gemini_model(
     current_step: InterviewStep,
     user_lang: str,
     resume_lang: str,
+    job_description: str | None = None,
 ) -> genai.GenerativeModel:
     """
     Build a configured GenerativeModel instance.
@@ -373,7 +416,7 @@ def _build_gemini_model(
 
     return genai.GenerativeModel(
         model_name=DEFAULT_MODEL,
-        system_instruction=build_system_prompt(user_lang, resume_lang, current_step),
+        system_instruction=build_system_prompt(user_lang, resume_lang, current_step, job_description),
         safety_settings={
             # BLOCK_ONLY_HIGH allows almost all professional content through
             # while still blocking genuinely harmful outputs.
@@ -478,6 +521,7 @@ async def stream_interview_turn(
     user_lang: str,
     resume_lang: str,
     history: list[dict[str, str]],
+    job_description: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     The heart of the AI engine.  Streams a single interview turn.
@@ -512,7 +556,7 @@ async def stream_interview_turn(
         history:      Prior conversation turns (frontend format, excl. current msg).
     """
     # ── 1. Build the model and convert history ─────────────────────────────────
-    model   = _build_gemini_model(api_key, current_step, user_lang, resume_lang)
+    model   = _build_gemini_model(api_key, current_step, user_lang, resume_lang, job_description)
     contents = _convert_history_to_gemini(history) + [
         {"role": "user", "parts": [{"text": user_message}]},
     ]

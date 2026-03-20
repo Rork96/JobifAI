@@ -54,6 +54,12 @@ python-docx==1.1.2
 beautifulsoup4==4.12.3
 lxml==5.2.2
 
+# h2 — HTTP/2 support for httpx.
+# Adding http2=True to the scraper's AsyncClient lets us negotiate HTTP/2
+# with CDN-protected job boards (Cloudflare, Akamai) that rate-limit
+# HTTP/1.1 clients more aggressively.  Requires h2 >= 3.0 per httpx docs.
+h2==4.1.0
+
 # ──────────────────────────────────────────────────────────────
 # Why these choices?
 #   • fastapi + uvicorn  → async I/O matters when awaiting multiple AI calls

@@ -99,6 +99,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const [jobFetchedTitle,  setJobFetchedTitle]  = useState('');
   const [jobFetchedText,   setJobFetchedText]   = useState('');
 
+  // ── Paste fallback — shown when a URL scrape returns success=false ──────────
+  // When the site blocks our scraper (403, CAPTCHA, login wall), we flip this
+  // flag and render a dedicated frosted-glass textarea so the user can paste
+  // the JD manually without having to clear the URL and start over.
+  const [showPasteFallback, setShowPasteFallback] = useState(false);
+  const [jdPasteText,       setJdPasteText]       = useState('');
+
   // ── Hidden file input ref ─────────────────────────────────────────────────
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -113,7 +120,51 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const setOnboardingMode     = useAppStore((s) => s.setOnboardingMode);
   const setUploadedResumeText = useAppStore((s) => s.setUploadedResumeText);
   const setJobDescription     = useAppStore((s) => s.setJobDescription);
+  const setRealAtsScore       = useAppStore((s) => s.setRealAtsScore);
+  const setSkillGaps          = useAppStore((s) => s.setSkillGaps);
   const onboardingMode        = useAppStore((s) => s.onboardingMode);
+  const storeResumeText       = useAppStore((s) => s.uploadedResumeText);
+  const storeJobDescription   = useAppStore((s) => s.jobDescription);
+
+  // ── Step 3: real ATS score (API call) ─────────────────────────────────────
+  // Runs when step 3 starts in 'upload' mode.
+  // Concurrently with the 3-second scan animation so latency is hidden.
+  const [apiScore,   setApiScore]   = useState<number | null>(null);
+  const [apiGaps,    setApiGaps]    = useState<string[]>([]);
+  const [isScoringApi, setIsScoringApi] = useState(false);
+
+  useEffect(() => {
+    if (step !== 3 || onboardingMode !== 'upload') return;
+
+    const resumeText = storeResumeText || resumeText;
+    if (!resumeText) return;   // no resume → skip real scoring
+
+    setIsScoringApi(true);
+    fetch('/api/ats-score', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resume_text:     storeResumeText,
+        job_description: storeJobDescription,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const score: number = typeof data.score === 'number' ? data.score : 28;
+        const gaps: string[] = Array.isArray(data.skill_gaps) ? data.skill_gaps : [];
+        setApiScore(score);
+        setApiGaps(gaps);
+        setRealAtsScore(score);
+        setSkillGaps(gaps);
+      })
+      .catch(() => {
+        // Fallback score on network/API failure — keeps the flow unblocked
+        setApiScore(28);
+        setApiGaps([]);
+      })
+      .finally(() => setIsScoringApi(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, onboardingMode]);
 
   // ── Step 3: ATS scan animation ─────────────────────────────────────────────
   useEffect(() => {
@@ -132,9 +183,15 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     return () => { if (scanIntervalRef.current) clearInterval(scanIntervalRef.current); };
   }, [step]);
 
+  // ── Step 3: count-up animation toward real score ───────────────────────────
+  // Waits for BOTH the 3-second scan AND the API result before animating.
+  // For 'scratch' mode there's no resume → use the static 78.
   useEffect(() => {
     if (!scanComplete) return;
-    const TARGET = onboardingMode === 'scratch' ? 78 : 34;
+    const isUpload = onboardingMode !== 'scratch';
+    if (isUpload && apiScore === null) return;   // still waiting for API
+
+    const TARGET = isUpload ? apiScore! : 78;
     let count = 0;
     scoreIntervalRef.current = setInterval(() => {
       count += 2;
@@ -142,15 +199,29 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
       if (count >= TARGET) clearInterval(scoreIntervalRef.current!);
     }, 25);
     return () => { if (scoreIntervalRef.current) clearInterval(scoreIntervalRef.current); };
-  }, [scanComplete, onboardingMode]);
+  }, [scanComplete, onboardingMode, apiScore]);
+
+  // ── Score-based colour helpers ─────────────────────────────────────────────
+  const displayScore    = onboardingMode === 'scratch' ? scoreCount : (apiScore ?? scoreCount);
+  const scoreColorClass =
+    displayScore < 50  ? 'text-red-400' :
+    displayScore <= 80 ? 'text-amber-400' :
+                         'text-emerald-400';
+  const scoreLabelClass =
+    displayScore < 50  ? 'text-red-400' :
+    displayScore <= 80 ? 'text-amber-400' :
+                         'text-emerald-400';
 
   // ── Mascot state ───────────────────────────────────────────────────────────
-  // During any backend call OR the scan animation, show Mac "processing".
-  const mascotState =
-    (isParsingFile || isParsingJob)               ? 'processing' :
-    step === 3 && !scanComplete                   ? 'processing' :
-    step === 3 && scanComplete && onboardingMode !== 'scratch' ? 'warning' :
-    step === 3 && scanComplete                    ? 'talking' :
+  // Transitions through processing → shocked/processing/success once score arrives.
+  const mascotState: import('@/types').MascotState =
+    (isParsingFile || isParsingJob || isScoringApi)               ? 'processing' :
+    step === 3 && !scanComplete                                    ? 'processing' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && apiScore === null ? 'processing' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore < 50  ? 'shocked' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore <= 80 ? 'processing' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore > 80  ? 'success' :
+    step === 3 && scanComplete && onboardingMode === 'scratch'                        ? 'success' :
     'idle';
 
   // ── Step advance ───────────────────────────────────────────────────────────
@@ -255,6 +326,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     setJobError('');
     setJobFetchedTitle('');
     setJobFetchedText('');
+    setShowPasteFallback(false);
+    setJdPasteText('');
     setIsParsingJob(true);
 
     try {
@@ -281,15 +354,26 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         setJobFetchedText(data.text);
         setJobFetchedTitle(data.title || (data.source === 'text' ? 'Pasted text' : 'Job posting'));
       } else {
-        // Backend returned success=false with a helpful error_hint
-        setJobError(data.error_hint || 'Could not fetch the job description.');
+        // Backend returned success=false (blocked site, login wall, etc.)
+        // If the user supplied a URL (not raw text), show the paste fallback
+        // textarea instead of just an error message — it's a much better UX.
+        if (looksLikeUrl(jobInput)) {
+          setShowPasteFallback(true);
+        } else {
+          setJobError(data.error_hint || 'Could not process the job description.');
+        }
       }
 
     } catch {
-      setJobError(
-        'Could not connect to the server. '
-        + 'Please check your connection or paste the job text directly.'
-      );
+      // Network error — show paste fallback if it was a URL attempt
+      if (looksLikeUrl(jobInput)) {
+        setShowPasteFallback(true);
+      } else {
+        setJobError(
+          'Could not connect to the server. '
+          + 'Please check your connection or paste the job text directly.'
+        );
+      }
     } finally {
       setIsParsingJob(false);
     }
@@ -306,13 +390,19 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
    *   textarea content that changes with every character typed.
    */
   const handleUploadSubmit = useCallback(() => {
-    // Use fetched job text if available; otherwise use raw input
-    const finalJobText = jobFetchedText || jobInput.trim();
+    // Priority order for job description text:
+    //   1. Text from the paste-fallback textarea (user pasted after scrape blocked)
+    //   2. Text fetched successfully from a URL (auto-scraped)
+    //   3. Raw text typed/pasted directly into the URL/text input field
+    const finalJobText = (showPasteFallback ? jdPasteText : undefined)
+      ?? jobFetchedText
+      ?? jobInput.trim();
 
     setUploadedResumeText(resumeText);
     setJobDescription(finalJobText);
     advanceTo(3);
-  }, [resumeText, jobFetchedText, jobInput, setUploadedResumeText, setJobDescription, advanceTo]);
+  }, [resumeText, jobFetchedText, jobInput, jdPasteText, showPasteFallback,
+      setUploadedResumeText, setJobDescription, advanceTo]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -733,9 +823,9 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       )}
                     </AnimatePresence>
 
-                    {/* Job fetch error */}
+                    {/* Job fetch error (text-mode failures) */}
                     <AnimatePresence>
-                      {jobError && (
+                      {jobError && !showPasteFallback && (
                         <motion.div
                           initial={{ opacity: 0, y: -4 }}
                           animate={{ opacity: 1, y: 0 }}
@@ -744,6 +834,83 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         >
                           <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
                           <p className="text-xs text-amber-300">{jobError}</p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* ── Paste fallback — shown when the URL scrape is blocked ─────
+                        When LinkedIn/Indeed/etc. returns a 403 or login wall, we
+                        reveal this frosted-glass textarea so the user can paste the
+                        JD text manually without having to clear the URL and start over.
+                        The URL is kept visible above as a reminder of what they tried.
+                    ──────────────────────────────────────────────────────────────── */}
+                    <AnimatePresence>
+                      {showPasteFallback && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0,  scale: 1    }}
+                          exit={{    opacity: 0, y: 8,  scale: 0.98 }}
+                          transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+                          className="flex flex-col gap-2"
+                        >
+                          {/* Header row */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                              <p className="text-xs text-amber-300 font-medium">
+                                Oops — this site blocked our scanners.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowPasteFallback(false);
+                                setJdPasteText('');
+                              }}
+                              className="text-slate-500 hover:text-slate-300 transition-colors"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {/* Frosted-glass paste area */}
+                          <div className="relative rounded-xl overflow-hidden backdrop-blur-md bg-slate-800/70 border border-amber-500/30 shadow-lg shadow-amber-500/5">
+                            {/* Subtle gradient shimmer to make it feel premium */}
+                            <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 via-transparent to-transparent pointer-events-none" />
+                            <textarea
+                              value={jdPasteText}
+                              onChange={(e) => setJdPasteText(e.target.value)}
+                              placeholder="Paste the job description text here…"
+                              rows={5}
+                              autoFocus
+                              className="relative z-10 w-full bg-transparent px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none scrollbar-hidden"
+                            />
+                            {/* Character count badge */}
+                            {jdPasteText.length > 0 && (
+                              <div className="absolute bottom-2 right-2.5 z-10">
+                                <span className="text-[10px] text-amber-400/60 font-medium">
+                                  {jdPasteText.length.toLocaleString()} chars
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Confirm badge once text is pasted */}
+                          <AnimatePresence>
+                            {jdPasteText.trim().length > 50 && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -4 }}
+                                animate={{ opacity: 1, y:  0 }}
+                                exit={{    opacity: 0, y: -4 }}
+                                className="flex items-center gap-2"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                                <span className="text-xs text-emerald-400">
+                                  Job description ready — {jdPasteText.trim().length.toLocaleString()} chars
+                                </span>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -843,66 +1010,87 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.4 }}
                 >
-                  {onboardingMode !== 'scratch' ? (
+                  {/* Loading overlay while API scores in background after scan */}
+                  {onboardingMode !== 'scratch' && scanComplete && apiScore === null && (
+                    <motion.div
+                      className="flex items-center gap-2 text-slate-400 text-sm"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                    >
+                      <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+                      Calculating semantic match…
+                    </motion.div>
+                  )}
+
+                  {onboardingMode !== 'scratch' && apiScore !== null ? (
                     <>
                       <div>
-                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-red-400 mb-2">ATS Score</p>
+                        <p className={`text-xs font-bold uppercase tracking-[0.2em] mb-2 ${scoreLabelClass}`}>
+                          ATS Score
+                        </p>
                         <motion.div
-                          className="text-7xl font-black text-red-400 tabular-nums leading-none"
+                          className={`text-7xl font-black tabular-nums leading-none ${scoreColorClass}`}
                           initial={{ scale: 0.5 }}
                           animate={{ scale: 1 }}
                           transition={{ type: 'spring', stiffness: 340, damping: 22, delay: 0.1 }}
                         >
                           {scoreCount}
-                          <span className="text-3xl text-red-400/60">/100</span>
+                          <span className="text-3xl opacity-60">/100</span>
                         </motion.div>
+
                         <motion.p
                           className="mt-2 text-base font-semibold text-slate-200"
                           initial={{ opacity: 0, y: 4 }}
-                          animate={{ opacity: scoreCount >= 34 ? 1 : 0, y: scoreCount >= 34 ? 0 : 4 }}
+                          animate={{ opacity: scoreCount >= apiScore ? 1 : 0, y: scoreCount >= apiScore ? 0 : 4 }}
                         >
-                          Ouch. Only {scoreCount} out of 100.
+                          {displayScore < 50
+                            ? `Ouch. Only ${scoreCount} out of 100.`
+                            : displayScore <= 80
+                            ? `Decent start — ${scoreCount}/100. Room to grow.`
+                            : `Strong match — ${scoreCount}/100!`}
                         </motion.p>
+
                         <motion.p
                           className="mt-1 text-sm text-slate-400"
                           initial={{ opacity: 0 }}
-                          animate={{ opacity: scoreCount >= 34 ? 1 : 0 }}
+                          animate={{ opacity: scoreCount >= apiScore ? 1 : 0 }}
                           transition={{ delay: 0.3 }}
                         >
-                          Most ATS systems reject resumes below 60. The good news? I can fix this.
+                          {displayScore < 50
+                            ? 'Most ATS systems reject resumes below 60. The good news? I can fix this.'
+                            : displayScore <= 80
+                            ? 'A few keyword additions will push you past the ATS cutoff.'
+                            : "You're already a strong match. Mac will make it perfect."}
                         </motion.p>
                       </div>
 
-                      <motion.div
-                        className="grid grid-cols-2 gap-2"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: scoreCount >= 34 ? 1 : 0, y: scoreCount >= 34 ? 0 : 8 }}
-                        transition={{ delay: 0.4 }}
-                      >
-                        {[
-                          { label: 'Keywords',     score: '12/30', bad: true  },
-                          { label: 'Formatting',   score: '8/25',  bad: true  },
-                          { label: 'Action Verbs', score: '6/20',  bad: true  },
-                          { label: 'Length',       score: '8/25',  bad: false },
-                        ].map(({ label, score, bad }) => (
-                          <div
-                            key={label}
-                            className={[
-                              'rounded-xl px-3 py-2 flex items-center justify-between',
-                              bad
-                                ? 'bg-red-500/10 border border-red-500/20'
-                                : 'bg-emerald-500/10 border border-emerald-500/20',
-                            ].join(' ')}
-                          >
-                            <span className="text-xs text-slate-400">{label}</span>
-                            <span className={`text-xs font-bold ${bad ? 'text-red-400' : 'text-emerald-400'}`}>
-                              {score}
-                            </span>
+                      {/* ── Skill gap checklist ──────────────────────────────── */}
+                      {apiGaps.length > 0 && (
+                        <motion.div
+                          className="w-full"
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: scoreCount >= apiScore ? 1 : 0, y: scoreCount >= apiScore ? 0 : 8 }}
+                          transition={{ delay: 0.4 }}
+                        >
+                          <p className="text-xs font-bold uppercase tracking-[0.15em] text-orange-400 mb-2">
+                            Missing Keywords
+                          </p>
+                          <div className="flex flex-col gap-1.5">
+                            {apiGaps.map((gap) => (
+                              <div
+                                key={gap}
+                                className="flex items-center gap-2.5 bg-red-500/8 border border-red-500/20 rounded-xl px-3 py-2"
+                              >
+                                <AlertTriangle className="w-3 h-3 text-red-400 flex-shrink-0" />
+                                <span className="text-xs text-slate-300 font-medium">{gap}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </motion.div>
-
-                      <AlertTriangle className="w-4 h-4 text-amber-400 mx-auto opacity-60" />
+                          <p className="text-[11px] text-slate-500 mt-2">
+                            Mac will help you work these into your resume naturally.
+                          </p>
+                        </motion.div>
+                      )}
                     </>
                   ) : (
                     <>
@@ -930,7 +1118,10 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                     whileTap={{ scale: 0.97 }}
                     className="w-full bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold py-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-2 text-base"
                     initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: scoreCount > 5 ? 1 : 0, y: scoreCount > 5 ? 0 : 10 }}
+                    animate={{
+                      opacity: (onboardingMode === 'scratch' || apiScore !== null) && scoreCount > 5 ? 1 : 0,
+                      y:       (onboardingMode === 'scratch' || apiScore !== null) && scoreCount > 5 ? 0 : 10,
+                    }}
                     transition={{ duration: 0.4 }}
                   >
                     {onboardingMode === 'scratch' ? (

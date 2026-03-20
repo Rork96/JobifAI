@@ -17,6 +17,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BYOKModal } from './BYOKModal';
+import { useAppStore } from '@/store/useAppStore';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface PaywallModalProps {
@@ -91,9 +92,50 @@ const PlanCard: React.FC<PlanCardProps> = ({
   </motion.div>
 );
 
+// ─── Checkout helper ──────────────────────────────────────────────────────────
+/**
+ * Calls POST /api/checkout and redirects the browser to Stripe's hosted
+ * Checkout page.  On success Stripe sends a webhook that flips is_premium.
+ *
+ * Returns an error string if the request fails (so we can surface it in UI),
+ * or null on redirect (the function never "returns" in the happy path because
+ * the browser navigates away).
+ */
+async function redirectToStripeCheckout(userEmail?: string): Promise<string | null> {
+  try {
+    const res = await fetch('/api/checkout', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_email:  userEmail ?? null,
+        success_url: `${window.location.origin}/?checkout=success`,
+        cancel_url:  `${window.location.origin}/?checkout=cancel`,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => `HTTP ${res.status}`);
+      return detail;
+    }
+
+    const { url } = (await res.json()) as { url: string; session_id: string };
+    // Navigate to Stripe-hosted Checkout — the page moves away from our app.
+    window.location.href = url;
+    return null; // unreachable after navigation
+
+  } catch (err) {
+    return err instanceof Error ? err.message : 'Network error. Please try again.';
+  }
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) => {
-  const [showBYOK, setShowBYOK] = useState(false);
+  const [showBYOK,      setShowBYOK]      = useState(false);
+  const [checkoutError, setCheckoutError] = useState('');
+  const [loadingPlan,   setLoadingPlan]   = useState<string | null>(null);
+
+  // Grab the user's email so we can pre-fill the Stripe Checkout form
+  const userEmail = useAppStore((s) => s.user?.email);
 
   // ── Triple-click easter egg ──────────────────────────────────────────────────
   const clickCountRef  = useRef(0);
@@ -115,6 +157,16 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
     }
   }, []);
 
+  // ── Checkout handler ─────────────────────────────────────────────────────────
+  const handleCheckout = useCallback(async (planKey: string) => {
+    setCheckoutError('');
+    setLoadingPlan(planKey);
+    const error = await redirectToStripeCheckout(userEmail ?? undefined);
+    // If we reach here the redirect didn't happen (error case)
+    setLoadingPlan(null);
+    if (error) setCheckoutError(error);
+  }, [userEmail]);
+
   // ── Plan data ────────────────────────────────────────────────────────────────
   const plans = [
     {
@@ -123,6 +175,7 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
       price:    '$14.99',
       period:   '/ month',
       isPrimary: true,
+      planKey:  'pro',
       features: [
         'Unlimited ATS-optimised resumes',
         'Gemini AI interview (all sections)',
@@ -138,6 +191,7 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
       price:    '$4.99',
       period:   '/ 24 h',
       isPrimary: false,
+      planKey:  '24h',
       features: [
         '1 ATS-optimised resume',
         'Full AI interview session',
@@ -196,10 +250,25 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
               <PlanCard
                 key={plan.title}
                 {...plan}
-                onSelect={onAccessGranted}
+                cta={loadingPlan === plan.planKey ? 'Redirecting to Stripe…' : plan.cta}
+                onSelect={() => handleCheckout(plan.planKey)}
               />
             ))}
           </div>
+
+          {/* ── Checkout error ───────────────────────────────────────────────── */}
+          <AnimatePresence>
+            {checkoutError && (
+              <motion.p
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="px-8 pb-2 text-center text-xs text-red-400"
+              >
+                {checkoutError}
+              </motion.p>
+            )}
+          </AnimatePresence>
 
           {/* ── Free trial safety net ─────────────────────────────────────────── */}
           <div className="px-8 pb-8 text-center">

@@ -134,11 +134,41 @@ _REQUEST_TIMEOUT = 8.0  # seconds — generous but bounded
 
 # A realistic Chrome/Linux user-agent.  Many sites return simpler HTML for
 # actual browsers vs. a blank/bot UA, and some block requests with no UA.
+# Updated to Chrome 125 — matching the latest stable at time of writing.
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
+    "Chrome/125.0.0.0 Safari/537.36"
 )
+
+# Full set of headers sent by a real Chrome browser during a Google-referred
+# navigation.  Many modern job boards (Indeed, Workday, Greenhouse) now
+# inspect ALL of these headers and return 403 or a CAPTCHA page if any are
+# missing or obviously non-browser.
+#
+# Sec-Fetch-* headers were introduced in Chrome 76+ and are the most reliable
+# signal a site can use to distinguish a real browser from an httpx/curl client.
+# Adding them raises our acceptance rate on authenticated CDNs significantly.
+_REQUEST_HEADERS = {
+    "User-Agent":                _USER_AGENT,
+    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language":           "en-CA,en;q=0.9,fr-CA;q=0.8",
+    "Accept-Encoding":           "gzip, deflate, br",
+    # Simulate arriving via a Google search result — the most natural Referer
+    # for someone who just found a job posting.
+    "Referer":                   "https://www.google.com/",
+    # Sec-Fetch-* are the critical anti-bot headers.  A missing Sec-Fetch-Dest
+    # is a strong signal to Cloudflare/Akamai that the request is automated.
+    "Sec-Fetch-Dest":            "document",
+    "Sec-Fetch-Mode":            "navigate",
+    "Sec-Fetch-Site":            "cross-site",  # navigating from google.com → target
+    "Sec-Fetch-User":            "?1",          # user-initiated navigation
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control":             "max-age=0",
+    "Connection":                "keep-alive",
+    # DNT is optional but common in default Chrome installs
+    "DNT":                       "1",
+}
 
 # Minimum characters for extracted text to be considered a real job posting.
 _MIN_TEXT_CHARS = 100
@@ -187,13 +217,11 @@ async def fetch_job_description(url: str) -> ScraperResult:
         async with httpx.AsyncClient(
             follow_redirects=True,   # Follow 301/302 redirects (some boards redirect to canonical URLs)
             timeout=_REQUEST_TIMEOUT,
-            headers={
-                "User-Agent":      _USER_AGENT,
-                "Accept":          "text/html,application/xhtml+xml",
-                "Accept-Language": "en-CA,en;q=0.9",
-                # Simulate a real browser referrer to avoid some bot detectors
-                "Referer":         "https://www.google.com/",
-            },
+            headers=_REQUEST_HEADERS,
+            # httpx follows HTTP/2 when available; some CDNs rate-limit HTTP/1.1
+            # clients more aggressively.  http2=True requires the h2 package
+            # which is in requirements.txt.
+            http2=True,
         ) as client:
             response = await client.get(url)
 

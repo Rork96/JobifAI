@@ -118,9 +118,26 @@ interface OnboardingSlice {
    */
   jobDescription:      string;
 
+  /**
+   * The real ATS score (0–100) returned by POST /api/ats-score.
+   * Null before scoring completes.  The interview agent uses this as
+   * the baseline so it can track score improvement during the session.
+   */
+  realAtsScore: number | null;
+
+  /**
+   * Keywords present in the JD but absent from the resume.
+   * Surfaced in the Step 3 "shock" UI as a to-do checklist.
+   * The interview agent uses this list to prompt the user for the
+   * specific skills they need to add.
+   */
+  skillGaps: string[];
+
   setOnboardingMode:     (mode: 'upload' | 'scratch') => void;
   setUploadedResumeText: (text: string) => void;
   setJobDescription:     (jd: string) => void;
+  setRealAtsScore:       (score: number) => void;
+  setSkillGaps:          (gaps: string[]) => void;
 }
 
 // ── Interview Slice ───────────────────────────────────────────────────────────
@@ -288,10 +305,14 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   onboardingMode:      null,
   uploadedResumeText:  '',
   jobDescription:      '',
+  realAtsScore:        null,
+  skillGaps:           [],
 
   setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
   setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
   setJobDescription:     (jobDescription)     => set({ jobDescription }),
+  setRealAtsScore:       (realAtsScore)       => set({ realAtsScore }),
+  setSkillGaps:          (skillGaps)          => set({ skillGaps }),
 });
 
 // ── Interview Slice Factory ────────────────────────────────────────────────────

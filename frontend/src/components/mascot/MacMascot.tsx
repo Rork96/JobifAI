@@ -70,6 +70,8 @@ const STATE_EMOJIS: Partial<Record<MascotState, string>> = {
   listening:  '👂',  // Ear cupped — actively receiving audio
   processing: '🤔',  // Thinking face — mid-computation
   warning:    '⚖️',  // Scales of justice — HR compliance
+  shocked:    '😱',  // Horrified — ATS score is devastatingly low (< 50)
+  success:    '✨',  // Sparkles — ATS score is strong (> 80)
 };
 
 /**
@@ -82,6 +84,8 @@ const STATE_GRADIENTS: Record<MascotState, string> = {
   processing: 'from-brand-400 via-brand-500 to-brand-700',
   talking:    'from-brand-500 via-emerald-400 to-brand-600',
   warning:    'from-amber-400 via-orange-400 to-orange-500',
+  shocked:    'from-red-500 via-rose-500 to-red-700',
+  success:    'from-emerald-400 via-green-400 to-teal-500',
 };
 
 /**
@@ -93,6 +97,8 @@ const STATE_GLOW_CLASSES: Record<MascotState, string> = {
   processing: 'bg-brand-500',
   talking:    'bg-emerald-400',
   warning:    'bg-amber-400',
+  shocked:    'bg-red-500',
+  success:    'bg-emerald-400',
 };
 
 // ── Spring presets (stiffness/damping pairs) ──────────────────────────────────
@@ -137,6 +143,12 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
         x: [0, -12, 12, -9, 9, -5, 5, 0],
         transition: { duration: 0.55, ease: 'easeInOut' },
       });
+    } else if (state === 'shocked') {
+      // Shocked: larger, slower shake — conveys dramatic disbelief
+      shakeControls.start({
+        x: [0, -16, 16, -12, 12, -7, 7, -4, 4, 0],
+        transition: { duration: 0.85, ease: 'easeInOut' },
+      });
     } else {
       // Reset to centre on any other state
       shakeControls.start({ x: 0, transition: SPRING_SOFT });
@@ -158,7 +170,11 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     processing: { y: 0,                    scale: [1, 1.04, 1] },
     // Faster bob on both up AND slightly down to mimic speech cadence
     talking:    { y: [0, -6, 0, -3, 0],    scale: 1 },
-    warning:    { y: 0,                     scale: 1 },
+    warning:    { y: 0,                    scale: 1 },
+    // Shocked: recoil drop then settle — physical "flinch" reaction
+    shocked:    { y: [0, 8, -4, 0],        scale: [1, 0.92, 1.04, 1] },
+    // Success: joyful big bounce upward
+    success:    { y: [0, -14, 0, -8, 0],   scale: [1, 1.08, 1, 1.05, 1] },
   };
 
   const bodyTransition = {
@@ -178,6 +194,15 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
       y:     { repeat: Infinity, duration: 0.5, ease: 'easeInOut' },
     },
     warning: {},
+    shocked: {
+      y:     { repeat: Infinity, duration: 1.8, ease: 'easeInOut' },
+      scale: { repeat: Infinity, duration: 1.8, ease: 'easeInOut' },
+    },
+    success: {
+      // Celebratory — slower, bigger bounce
+      y:     { repeat: Infinity, duration: 1.2, ease: 'easeInOut' },
+      scale: { repeat: Infinity, duration: 1.2, ease: 'easeInOut' },
+    },
   };
 
   // ── Glow animation ────────────────────────────────────────────────────────
@@ -189,6 +214,10 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     processing: { scale: [1, 1.3, 1],  opacity: [0.25, 0.45, 0.25] },
     talking:    { scale: [1, 1.2, 1],  opacity: [0.25, 0.40, 0.25] },
     warning:    { scale: 1,            opacity: 0.40 },
+    // Shocked: intense pulsing red glow — alarm signal
+    shocked:    { scale: [1, 1.5, 1],  opacity: [0.35, 0.65, 0.35] },
+    // Success: gentle expanding halo — warmth and celebration
+    success:    { scale: [1, 1.4, 1],  opacity: [0.30, 0.55, 0.30] },
   };
 
   const glowTransition = {
@@ -197,6 +226,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     processing: { repeat: Infinity, duration: 1.2, ease: 'easeInOut' },
     talking:    { repeat: Infinity, duration: 0.6, ease: 'easeInOut' },
     warning:    {},
+    shocked:    { repeat: Infinity, duration: 1.0, ease: 'easeInOut' },
+    success:    { repeat: Infinity, duration: 1.6, ease: 'easeInOut' },
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -438,6 +469,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
             state === 'listening'  ? 'bg-blue-400' :
             state === 'warning'    ? 'bg-amber-400' :
             state === 'talking'    ? 'bg-emerald-400' :
+            state === 'shocked'    ? 'bg-red-400' :
+            state === 'success'    ? 'bg-emerald-300' :
                                      'bg-green-400',
           ].join(' ')}
           // Blink rate speeds up when active
@@ -459,6 +492,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
                 state === 'processing' ? 'text-brand-500' :
                 state === 'talking'    ? 'text-emerald-600' :
                 state === 'warning'    ? 'text-amber-600' :
+                state === 'shocked'    ? 'text-red-500' :
+                state === 'success'    ? 'text-emerald-500' :
                                          'text-gray-400',
               ].join(' ')}
               initial={{ opacity: 0, x: -4 }}
@@ -470,6 +505,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
               {state === 'processing' && 'Thinking…'}
               {state === 'talking'    && 'Speaking…'}
               {state === 'warning'    && 'HR check'}
+              {state === 'shocked'    && 'Yikes…'}
+              {state === 'success'    && 'Looking great!'}
             </motion.span>
           )}
         </AnimatePresence>
