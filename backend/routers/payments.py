@@ -135,6 +135,12 @@ async def create_checkout_session(
       • 3D Secure / SCA (EU) is handled automatically.
       • It works on all devices without extra frontend work.
     """
+    if not settings.stripe_secret_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stripe is not configured on this server. Set STRIPE_SECRET_KEY in .env.",
+        )
+
     stripe.api_key = settings.stripe_secret_key
 
     try:
@@ -181,10 +187,14 @@ async def create_checkout_session(
         return CheckoutResponse(url=session.url, session_id=session.id)
 
     except stripe.error.StripeError as exc:
+        # Surface the actual Stripe error to the frontend for easier debugging.
+        # The user-facing message from Stripe (exc.user_message) is safe to expose;
+        # fallback to str(exc) for errors without a user_message attribute.
+        user_msg = getattr(exc, "user_message", None) or str(exc)
         logger.error("Stripe error creating checkout session: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Payment service temporarily unavailable. Please try again.",
+            detail=f"Stripe error: {user_msg}",
         ) from exc
 
 

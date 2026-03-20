@@ -30,7 +30,6 @@ import React, {
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowRight,
-  Bot,
   CheckCircle2,
   FileText,
   Link2,
@@ -88,6 +87,17 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const [resumeText,   setResumeText]   = useState('');
   const [jobInput,     setJobInput]     = useState('');  // URL or pasted text
   const [isDragging,   setIsDragging]   = useState(false);
+
+  // ── Step 2: "Start from Scratch" sub-form ─────────────────────────────────
+  // When the user picks "scratch", we show a brief target-job prompt before
+  // advancing to step 3.  This gives Mac the JD context it needs for tailored
+  // interview questions even when there's no existing resume to score.
+  const [showScratchSubForm, setShowScratchSubForm] = useState(false);
+  const [scratchJobInput,    setScratchJobInput]    = useState('');
+
+  // ── Step 3: skip button after timeout ─────────────────────────────────────
+  // If the API hasn't responded after 8 s, surface an escape hatch.
+  const [showSkipButton, setShowSkipButton] = useState(false);
 
   // ── Upload loading + result state ─────────────────────────────────────────
   // Separate loading flags so Mac shows processing for both independently.
@@ -201,6 +211,18 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     return () => { if (scoreIntervalRef.current) clearInterval(scoreIntervalRef.current); };
   }, [scanComplete, onboardingMode, apiScore]);
 
+  // ── Step 3: skip button after 8-second timeout ────────────────────────────
+  // If the API is still pending after 8 s, show an escape hatch so the user
+  // isn't stranded at 0%.  The timer starts when scan completes but API hasn't.
+  useEffect(() => {
+    if (!(onboardingMode !== 'scratch' && scanComplete && apiScore === null)) {
+      setShowSkipButton(false);
+      return;
+    }
+    const t = setTimeout(() => setShowSkipButton(true), 8000);
+    return () => clearTimeout(t);
+  }, [onboardingMode, scanComplete, apiScore]);
+
   // ── Score-based colour helpers ─────────────────────────────────────────────
   const displayScore    = onboardingMode === 'scratch' ? scoreCount : (apiScore ?? scoreCount);
   const scoreColorClass =
@@ -233,8 +255,18 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
   const handleForkScratch = useCallback(() => {
     setOnboardingMode('scratch');
-    advanceTo(3);
-  }, [setOnboardingMode, advanceTo]);
+    setShowScratchSubForm(true);  // Stay on step 2, show sub-form
+  }, [setOnboardingMode]);
+
+  // Called when user submits the scratch sub-form.
+  // Skip the ATS scan step entirely for scratch mode — jump straight to workspace.
+  const handleScratchSubmit = useCallback(() => {
+    if (scratchJobInput.trim()) {
+      setJobDescription(scratchJobInput.trim());
+    }
+    setShowScratchSubForm(false);
+    onComplete();  // Skip ATS scoring — makes no sense without an existing resume
+  }, [scratchJobInput, setJobDescription, onComplete]);
 
   // ── Upload resume via backend API ──────────────────────────────────────────
   /**
@@ -406,13 +438,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed inset-0 bg-slate-950 flex flex-col items-center justify-center overflow-hidden">
+    <div className="fixed inset-0 bg-slate-50 flex flex-col items-center justify-center overflow-hidden">
 
-      {/* Radial gradient background */}
+      {/* Radial gradient background — warm orange tint from top */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
-          background: 'radial-gradient(ellipse 80% 60% at 50% -10%, rgba(251,146,60,0.08) 0%, transparent 70%)',
+          background: 'radial-gradient(ellipse 80% 60% at 50% -10%, rgba(251,146,60,0.12) 0%, transparent 70%)',
         }}
       />
 
@@ -421,14 +453,14 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         {[0, 1, 2, 3].map((i) => (
           <motion.div
             key={i}
-            className="rounded-full bg-slate-600"
+            className="rounded-full"
             animate={{
               width: i === step ? 24 : 6,
               backgroundColor: i === step
-                ? 'rgb(251 146 60)'
+                ? 'rgb(249 115 22)'   // orange-500
                 : i < step
-                  ? 'rgb(100 116 139)'
-                  : 'rgb(71 85 105)',
+                  ? 'rgb(203 213 225)' // slate-300 — completed
+                  : 'rgb(226 232 240)', // slate-200 — future
             }}
             transition={{ type: 'spring', stiffness: 380, damping: 28 }}
             style={{ height: 6 }}
@@ -451,16 +483,30 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
               animate="center"
               exit="exit"
               transition={stepTransition}
-              className="flex flex-col items-center gap-8 text-center"
+              className="flex flex-col items-center gap-6 text-center"
             >
-              <MacMascot currentStep="idle" state="idle" />
+              {/* Larger mascot — 160px video circle */}
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-40 h-40 rounded-full overflow-hidden ring-4 ring-orange-400/20 shadow-2xl shadow-orange-400/10">
+                  <video autoPlay loop muted playsInline src="/mascot/idle.webm"
+                    className="w-full h-full object-cover" />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-semibold text-gray-700">Mac</span>
+                  <span className="text-xs text-gray-400">· AI Co-pilot</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
+                </div>
+              </div>
 
               <div>
-                <h1 className="text-2xl font-bold text-slate-100 leading-tight">
-                  How many job applications have you sent
-                  <span className="text-orange-400"> with zero interviews?</span>
+                <h1 className="text-2xl font-bold text-gray-900 leading-tight">
+                  Hi, I'm Mac! Let's build your
+                  <span className="text-orange-500"> perfect resume.</span>
                 </h1>
-                <p className="mt-2 text-sm text-slate-400">No judgment. We've all been there.</p>
+                <p className="mt-2 text-sm text-gray-500">
+                  How many applications have you sent with zero interviews?
+                </p>
+                <p className="text-xs text-gray-400 mt-0.5">No judgment. We've all been there.</p>
               </div>
 
               <div className="w-full flex flex-col gap-3">
@@ -489,32 +535,26 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
               transition={stepTransition}
               className="flex flex-col items-center gap-7 text-center"
             >
-              <motion.div
-                className="w-20 h-20 rounded-3xl bg-gradient-to-br from-slate-700 to-slate-800 border border-slate-600/50 flex items-center justify-center shadow-2xl"
-                initial={{ scale: 0.6, rotate: -12 }}
-                animate={{ scale: 1, rotate: 0 }}
-                transition={{ type: 'spring', stiffness: 260, damping: 20, delay: 0.1 }}
-              >
-                <Bot className="w-10 h-10 text-red-400" />
-              </motion.div>
+              {/* Mac reacts to the bad news — listening state */}
+              <MacMascot currentStep="idle" state={mascotState} />
 
               <div>
                 <motion.p
-                  className="text-xs font-bold uppercase tracking-[0.2em] text-orange-400 mb-2"
+                  className="text-xs font-bold uppercase tracking-[0.2em] text-orange-500 mb-2"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.2 }}
                 >
                   The culprit
                 </motion.p>
-                <h1 className="text-2xl font-bold text-slate-100 leading-tight">
+                <h1 className="text-2xl font-bold text-gray-900 leading-tight">
                   It's not you.<br />
-                  <span className="text-red-400">It's the ATS robots.</span>
+                  <span className="text-red-500">It's the ATS robots.</span>
                 </h1>
               </div>
 
               <motion.div
-                className="w-full bg-slate-800/80 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-5 text-left space-y-3"
+                className="w-full bg-white border border-gray-200 rounded-2xl p-5 text-left space-y-3 shadow-sm"
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3, type: 'spring', stiffness: 260, damping: 24 }}
@@ -527,8 +567,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   <div key={stat} className="flex items-start gap-3">
                     <span className="text-xl flex-shrink-0 mt-0.5">{icon}</span>
                     <div>
-                      <span className="text-sm font-bold text-slate-100">{stat} </span>
-                      <span className="text-sm text-slate-400">{detail}</span>
+                      <span className="text-sm font-bold text-gray-900">{stat} </span>
+                      <span className="text-sm text-gray-500">{detail}</span>
                     </div>
                   </div>
                 ))}
@@ -563,8 +603,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
               className="flex flex-col gap-5"
             >
               <div className="text-center">
-                <h1 className="text-2xl font-bold text-slate-100">How do you want to start?</h1>
-                <p className="mt-1.5 text-sm text-slate-400">Mac adapts to your situation.</p>
+                <h1 className="text-2xl font-bold text-gray-900">How do you want to start?</h1>
+                <p className="mt-1.5 text-sm text-gray-500">Mac adapts to your situation.</p>
               </div>
 
               {onboardingMode !== 'upload' ? (
@@ -573,49 +613,106 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   <motion.button
                     onClick={() => setOnboardingMode('upload')}
                     whileTap={{ scale: 0.98 }}
-                    className="w-full bg-slate-800/80 border border-slate-700/50 rounded-2xl p-5 text-left hover:border-orange-500/50 hover:bg-slate-800 transition-all group"
+                    className="w-full bg-white border border-gray-200 rounded-2xl p-5 text-left hover:border-orange-400/60 hover:bg-orange-50/50 transition-all group shadow-sm"
                     initial={{ opacity: 0, x: -12 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.1 }}
                   >
                     <div className="flex items-start gap-4">
-                      <div className="w-11 h-11 rounded-xl bg-orange-500/15 border border-orange-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-orange-500/25 transition-colors">
-                        <FileText className="w-5 h-5 text-orange-400" />
+                      <div className="w-11 h-11 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-orange-500/20 transition-colors">
+                        <FileText className="w-5 h-5 text-orange-500" />
                       </div>
                       <div>
-                        <p className="font-semibold text-slate-100">I have a resume draft</p>
-                        <p className="text-sm text-slate-400 mt-0.5">
+                        <p className="font-semibold text-gray-900">I have a resume draft</p>
+                        <p className="text-sm text-gray-500 mt-0.5">
                           Mac will score it, rewrite weak bullets, and tailor it to a job description.
                         </p>
                       </div>
-                      <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0 mt-3 ml-auto group-hover:text-orange-400 group-hover:translate-x-0.5 transition-all" />
+                      <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0 mt-3 ml-auto group-hover:text-orange-500 group-hover:translate-x-0.5 transition-all" />
                     </div>
                   </motion.button>
 
-                  <motion.button
-                    onClick={handleForkScratch}
-                    whileTap={{ scale: 0.98 }}
-                    className="w-full bg-slate-800/80 border border-slate-700/50 rounded-2xl p-5 text-left hover:border-brand-400/50 hover:bg-slate-800 transition-all group"
-                    initial={{ opacity: 0, x: -12 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.2 }}
-                  >
-                    <div className="flex items-start gap-4">
-                      <div className="w-11 h-11 rounded-xl bg-brand-500/15 border border-brand-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-brand-500/25 transition-colors">
-                        <Sparkles className="w-5 h-5 text-brand-400" />
+                  {!showScratchSubForm ? (
+                    <motion.button
+                      onClick={handleForkScratch}
+                      whileTap={{ scale: 0.98 }}
+                      className="w-full bg-white border border-gray-200 rounded-2xl p-5 text-left hover:border-brand-400/60 hover:bg-brand-50/30 transition-all group shadow-sm"
+                      initial={{ opacity: 0, x: -12 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.2 }}
+                    >
+                      <div className="flex items-start gap-4">
+                        <div className="w-11 h-11 rounded-xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center flex-shrink-0 group-hover:bg-brand-500/20 transition-colors">
+                          <Sparkles className="w-5 h-5 text-brand-500" />
+                        </div>
+                        <div>
+                          <p className="font-semibold text-gray-900">Start from scratch</p>
+                          <p className="text-sm text-gray-500 mt-0.5">
+                            Mac will interview you in a natural conversation and build your resume from zero.
+                          </p>
+                          <span className="inline-block mt-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                            Recommended
+                          </span>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0 mt-3 ml-auto group-hover:text-brand-500 group-hover:translate-x-0.5 transition-all" />
                       </div>
-                      <div>
-                        <p className="font-semibold text-slate-100">Start from scratch</p>
-                        <p className="text-sm text-slate-400 mt-0.5">
-                          Mac will interview you in a natural conversation and build your resume from zero.
-                        </p>
-                        <span className="inline-block mt-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 rounded-full px-2 py-0.5">
-                          Recommended
-                        </span>
+                    </motion.button>
+                  ) : (
+                    /* ── Scratch sub-form: target job context ─────────────────
+                       Collecting a target title or URL gives Mac the JD context
+                       it needs to tailor questions from the very first message.
+                    ────────────────────────────────────────────────────────── */
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="w-full bg-white border border-brand-500/30 rounded-2xl p-5 flex flex-col gap-4 shadow-sm"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-brand-500/15 flex items-center justify-center flex-shrink-0">
+                          <Sparkles className="w-4 h-4 text-brand-400" />
+                        </div>
+                        <div>
+                          <p className="font-semibold text-gray-900 text-sm">What role are you targeting?</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Paste a job URL or type a title — Mac will tailor every question to it.
+                          </p>
+                        </div>
                       </div>
-                      <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0 mt-3 ml-auto group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all" />
-                    </div>
-                  </motion.button>
+
+                      <input
+                        type="text"
+                        value={scratchJobInput}
+                        onChange={(e) => setScratchJobInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleScratchSubmit(); }}
+                        placeholder="e.g. Senior Product Manager or https://…"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-brand-500/60 transition-colors"
+                        autoFocus
+                      />
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleScratchSubmit}
+                          className="flex-1 bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 text-white font-semibold text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          Start building →
+                        </button>
+                        <button
+                          onClick={handleScratchSubmit}
+                          className="text-xs text-slate-500 hover:text-slate-300 transition-colors px-3"
+                        >
+                          Skip
+                        </button>
+                      </div>
+
+                      <button
+                        onClick={() => { setShowScratchSubForm(false); setOnboardingMode(null); }}
+                        className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center"
+                      >
+                        ← Go back
+                      </button>
+                    </motion.div>
+                  )}
                 </div>
               ) : (
                 /* ── Path A expanded: upload + JD form ───────────────────
@@ -1013,12 +1110,38 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   {/* Loading overlay while API scores in background after scan */}
                   {onboardingMode !== 'scratch' && scanComplete && apiScore === null && (
                     <motion.div
-                      className="flex items-center gap-2 text-slate-400 text-sm"
+                      className="flex flex-col gap-3"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                     >
-                      <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
-                      Calculating semantic match…
+                      <div className="flex items-center gap-2 text-slate-400 text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+                        Calculating semantic match…
+                      </div>
+
+                      {/* Escape hatch — appears after 8 s if API is still pending */}
+                      <AnimatePresence>
+                        {showSkipButton && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="flex flex-col gap-2"
+                          >
+                            <button
+                              onClick={() => { setApiScore(28); setRealAtsScore(28); }}
+                              className="w-full bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 text-orange-300 font-semibold text-sm py-2.5 rounded-xl transition-all"
+                            >
+                              Skip & Continue to Workspace →
+                            </button>
+                            <button
+                              onClick={() => { advanceTo(2); setScanComplete(false); setScanProgress(0); setApiScore(null); setShowSkipButton(false); }}
+                              className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center"
+                            >
+                              ← Go Back
+                            </button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </motion.div>
                   )}
 
@@ -1130,6 +1253,14 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       <><Wand2 className="w-4 h-4" /> Let Mac fix this →</>
                     )}
                   </motion.button>
+
+                  {/* Go Back — always available so users are never trapped */}
+                  <button
+                    onClick={() => { advanceTo(2); setScanComplete(false); setScanProgress(0); setApiScore(null); setShowSkipButton(false); }}
+                    className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center w-full"
+                  >
+                    ← Go Back
+                  </button>
                 </motion.div>
               )}
             </motion.div>
@@ -1138,7 +1269,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         </AnimatePresence>
       </div>
 
-      <p className="absolute bottom-6 text-[11px] text-slate-600 px-4 text-center">
+      <p className="absolute bottom-6 text-[11px] text-gray-400 px-4 text-center">
         No credit card required · Canadian HR compliance enforced · Delete anytime
       </p>
     </div>
@@ -1162,16 +1293,16 @@ const PainOptionCard: React.FC<PainOptionCardProps> = ({ label, sub, onClick }) 
       onClick={() => { setSelected(true); onClick(); }}
       whileTap={{ scale: 0.97 }}
       className={[
-        'w-full rounded-2xl p-4 text-left border transition-all',
+        'w-full rounded-2xl p-4 text-left border transition-all shadow-sm',
         selected
-          ? 'bg-orange-500/15 border-orange-400/60'
-          : 'bg-slate-800/80 border-slate-700/50 hover:border-slate-600 hover:bg-slate-800',
+          ? 'bg-orange-50 border-orange-400/60 shadow-orange-100'
+          : 'bg-white border-gray-200 hover:border-orange-300 hover:bg-orange-50/50',
       ].join(' ')}
     >
       <div className="flex items-center justify-between">
         <div>
-          <p className={`font-semibold text-sm ${selected ? 'text-orange-300' : 'text-slate-200'}`}>{label}</p>
-          <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
+          <p className={`font-semibold text-sm ${selected ? 'text-orange-600' : 'text-gray-900'}`}>{label}</p>
+          <p className="text-xs text-gray-500 mt-0.5">{sub}</p>
         </div>
         <motion.div
           animate={{ scale: selected ? 1 : 0, opacity: selected ? 1 : 0 }}

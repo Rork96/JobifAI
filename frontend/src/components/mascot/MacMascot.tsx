@@ -50,42 +50,17 @@ import type { InterviewStep, MascotState } from '@/types';
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /**
- * Per-step emoji expressions — shown inside the mascot circle.
- * When the 3D model ships, these map to animation clip names instead.
+ * WebM video asset per state — loaded from /public/mascot/*.webm.
+ * States without a dedicated asset fall back to the closest available clip.
  */
-const STEP_EXPRESSIONS: Record<InterviewStep, string> = {
-  idle:             '😺',  // Relaxed, inviting
-  target_title:     '🎯',  // Focused, purposeful
-  summary:          '✍️',  // Thoughtful, creative
-  experience:       '💼',  // Professional mode on
-  skills_education: '🎓',  // In scholar mode
-  complete:         '🎉',  // Celebrating their achievement
-};
-
-/**
- * Per-state emoji overlays — override the step expression when Mac is reacting.
- * These communicate what Mac is "doing" at the system level, not the step content.
- */
-const STATE_EMOJIS: Partial<Record<MascotState, string>> = {
-  listening:  '👂',  // Ear cupped — actively receiving audio
-  processing: '🤔',  // Thinking face — mid-computation
-  warning:    '⚖️',  // Scales of justice — HR compliance
-  shocked:    '😱',  // Horrified — ATS score is devastatingly low (< 50)
-  success:    '✨',  // Sparkles — ATS score is strong (> 80)
-};
-
-/**
- * Tailwind gradient classes per state.
- * ⚠️ Must be full class strings (not interpolated) for Tailwind JIT to include them.
- */
-const STATE_GRADIENTS: Record<MascotState, string> = {
-  idle:       'from-brand-400 via-brand-500 to-brand-700',
-  listening:  'from-brand-400 via-violet-500 to-blue-500',
-  processing: 'from-brand-400 via-brand-500 to-brand-700',
-  talking:    'from-brand-500 via-emerald-400 to-brand-600',
-  warning:    'from-amber-400 via-orange-400 to-orange-500',
-  shocked:    'from-red-500 via-rose-500 to-red-700',
-  success:    'from-emerald-400 via-green-400 to-teal-500',
+const STATE_VIDEOS: Record<MascotState, string> = {
+  idle:       '/mascot/idle.webm',
+  listening:  '/mascot/idle.webm',        // fallback — no dedicated asset
+  processing: '/mascot/processing.webm',
+  talking:    '/mascot/processing.webm',  // fallback — no dedicated asset
+  warning:    '/mascot/warning.webm',
+  shocked:    '/mascot/shocked.webm',
+  success:    '/mascot/success.webm',
 };
 
 /**
@@ -126,10 +101,8 @@ interface MacMascotProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClick }) => {
 
-  // The displayed emoji: state-specific override wins, otherwise step-based
-  const expression = STATE_EMOJIS[state] ?? STEP_EXPRESSIONS[currentStep];
-  const gradient   = STATE_GRADIENTS[state];
-  const glowClass  = STATE_GLOW_CLASSES[state];
+  const glowClass = STATE_GLOW_CLASSES[state];
+  const videoSrc  = STATE_VIDEOS[state];
 
   // `shakeControls` drives the one-shot horizontal head-shake for `warning`.
   // We use `useAnimation()` so we can imperatively trigger it without
@@ -306,48 +279,36 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
           )}
         </AnimatePresence>
 
-        {/* ── LAYER 3: Mascot circle ───────────────────────────────────── */}
-        <motion.button
+        {/* ── LAYER 3: Mascot video circle ─────────────────────────────── */}
+        <motion.div
           onClick={onClick}
           // Float + scale driven by current state
           animate={bodyAnimate[state]}
           transition={bodyTransition[state]}
-          // Micro-interactions — spring physics blend with the ongoing animation
+          // Micro-interactions
           whileHover={{ scale: 1.08, transition: SPRING_SNAPPY }}
           whileTap={{ scale: 0.93, transition: SPRING_SNAPPY }}
           className={[
-            'relative w-24 h-24 rounded-full',
-            // Gradient is swapped per state via a full class string
-            `bg-gradient-to-br ${gradient}`,
-            'flex items-center justify-center',
-            'shadow-brand cursor-pointer',
-            'outline-none focus-visible:ring-4 focus-visible:ring-brand-400/50',
-            // Smooth gradient colour transitions
-            'transition-[background] duration-700',
+            'relative w-24 h-24 rounded-full overflow-hidden',
+            'shadow-brand',
+            onClick ? 'cursor-pointer' : 'cursor-default',
           ].join(' ')}
           aria-label={`Mac the AI co-pilot — ${state}`}
+          role={onClick ? 'button' : undefined}
+          tabIndex={onClick ? 0 : undefined}
         >
-
-          {/* Expression emoji — springs in/out on change */}
-          <AnimatePresence mode="wait">
-            <motion.span
-              // Changing key triggers exit → enter spring animation.
-              // Key includes both state + expression so warning swaps the emoji
-              // AND so the step expression swaps when the step advances.
-              key={`${state}-${expression}`}
-              className="text-4xl"
-              role="img"
-              aria-label={`Mac is ${state}`}
-              initial={{ scale: 0.4, opacity: 0 }}
-              animate={{ scale: 1,   opacity: 1 }}
-              exit={{   scale: 0.4, opacity: 0 }}
-              transition={SPRING_SNAPPY}
-            >
-              {expression}
-            </motion.span>
-          </AnimatePresence>
-
-        </motion.button>
+          {/* key forces remount (and autoplay) whenever src changes */}
+          <video
+            key={videoSrc}
+            autoPlay
+            loop
+            muted
+            playsInline
+            src={videoSrc}
+            className="absolute inset-0 w-full h-full object-cover"
+            aria-hidden="true"
+          />
+        </motion.div>
 
         {/* ── LAYER 4a: PROCESSING — Thought bubble ───────────────────── */}
         {/*

@@ -55,10 +55,11 @@ const sectionVariants = {
 export const DocumentPreview: React.FC = () => {
 
   // ── Store ─────────────────────────────────────────────────────────────────
-  const resumeData  = useAppStore((s) => s.resumeData);
-  const isPremium   = useAppStore((s) => s.isPremium);
-  const isComplete  = useAppStore(selectIsInterviewComplete);
-  const currentStep = useAppStore((s) => s.currentStep);
+  const resumeData         = useAppStore((s) => s.resumeData);
+  const uploadedResumeText = useAppStore((s) => s.uploadedResumeText);
+  const isPremium          = useAppStore((s) => s.isPremium);
+  const isComplete         = useAppStore(selectIsInterviewComplete);
+  const currentStep        = useAppStore((s) => s.currentStep);
 
   // BYOK users brought their own Gemini key → treat them as premium (they paid
   // with their API quota, not our Stripe paywall).  Read on each render so the
@@ -219,33 +220,60 @@ export const DocumentPreview: React.FC = () => {
       {/* ── Scrollable resume content ─────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto scrollbar-hidden">
 
-        {/* ── Empty state: animated skeleton ───────────────────────────── */}
+        {/* ── Empty state ───────────────────────────────────────────────── */}
         {!hasContent ? (
-          <div className="h-full flex flex-col items-center justify-center gap-5 px-8 py-10 text-center">
-            <div className="w-full max-w-sm space-y-3">
-              {[100, 55, 75, 42, 68, 50].map((w, i) => (
-                <motion.div
-                  key={i}
-                  className="h-2.5 rounded-full bg-slate-700/80"
-                  style={{ width: `${w}%` }}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: [0.4, 0.7, 0.4] }}
-                  transition={{
-                    opacity: { repeat: Infinity, duration: 1.8, delay: i * 0.1 },
-                    x: { duration: 0.3, delay: i * 0.06 },
-                  }}
-                />
-              ))}
+          uploadedResumeText?.trim() ? (
+            /* ── Raw upload preview — Mac is analyzing ─────────────────── */
+            <div className="p-4 pb-8">
+              <motion.div
+                className="bg-slate-800 rounded-2xl border border-slate-700/50 shadow-2xl overflow-hidden"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+              >
+                <div className="h-1 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-400" />
+                <div className="p-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                    <span className="text-xs font-semibold text-orange-400 uppercase tracking-wide">
+                      Mac is analyzing your resume…
+                    </span>
+                  </div>
+                  <pre className="text-xs text-slate-400 whitespace-pre-wrap break-words leading-relaxed font-mono max-h-[60vh] overflow-y-auto scrollbar-hidden">
+                    {uploadedResumeText.slice(0, 4000)}
+                    {uploadedResumeText.length > 4000 && '\n\n[…truncated for preview]'}
+                  </pre>
+                </div>
+              </motion.div>
             </div>
-            <div className="mt-2">
-              <p className="text-sm font-medium text-slate-400">
-                Your resume appears here as you chat
-              </p>
-              <p className="text-xs text-slate-600 mt-1">
-                Answer Mac's questions to fill it in →
-              </p>
+          ) : (
+            /* ── Default skeleton — no content yet ─────────────────────── */
+            <div className="h-full flex flex-col items-center justify-center gap-5 px-8 py-10 text-center">
+              <div className="w-full max-w-sm space-y-3">
+                {[100, 55, 75, 42, 68, 50].map((w, i) => (
+                  <motion.div
+                    key={i}
+                    className="h-2.5 rounded-full bg-slate-700/80"
+                    style={{ width: `${w}%` }}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: [0.4, 0.7, 0.4] }}
+                    transition={{
+                      opacity: { repeat: Infinity, duration: 1.8, delay: i * 0.1 },
+                      x: { duration: 0.3, delay: i * 0.06 },
+                    }}
+                  />
+                ))}
+              </div>
+              <div className="mt-2">
+                <p className="text-sm font-medium text-slate-400">
+                  Your resume appears here as you chat
+                </p>
+                <p className="text-xs text-slate-600 mt-1">
+                  Answer Mac's questions to fill it in →
+                </p>
+              </div>
             </div>
-          </div>
+          )
         ) : (
           /* ── Live resume document (the "paper") ──────────────────────── */
           <div className="p-4 pb-8">

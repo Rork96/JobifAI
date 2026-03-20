@@ -111,10 +111,12 @@ export function useSpeechRecognition(lang: string): SpeechRecognitionState {
     // interimResults=true: fire onresult with isFinal=false during speech.
     // This powers the live typewriter effect in the textarea.
     recognition.interimResults  = true;
-    // continuous=false: recognition stops automatically on a pause in speech.
-    // The user doesn't have to press stop — it auto-ends on silence (~1-2s).
-    // This matches native mobile keyboard voice input UX.
-    recognition.continuous      = false;
+    // continuous=true: recognition keeps running until the user manually stops
+    // (presses the mic button again).  This prevents early cutoff on natural
+    // pauses mid-sentence and lets users dictate longer answers without
+    // having to tap the mic again.  The mic button always shows the stop icon
+    // while active, making the state clear to the user.
+    recognition.continuous      = true;
     // Retrieve the most likely transcription (index 0)
     recognition.maxAlternatives = 1;
 

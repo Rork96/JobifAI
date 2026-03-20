@@ -36,7 +36,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, Mail, X } from 'lucide-react';
+import { FileText, LogOut, Mail, Settings, X, Zap } from 'lucide-react';
 import { ChatPanel }        from '@/components/chat/ChatPanel';
 import { DocumentPreview }  from '@/components/document/DocumentPreview';
 import { BottomSheet }      from '@/components/ui/BottomSheet';
@@ -101,14 +101,19 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
   const user              = useAppStore((s) => s.user);
   const isPremium         = useAppStore((s) => s.isPremium);
   const isInterviewActive = useAppStore(selectIsInterviewActive);
+  const userLang          = useAppStore((s) => s.userLang);
+  const resumeLang        = useAppStore((s) => s.resumeLang);
+  const setUserLang       = useAppStore((s) => s.setUserLang);
+  const setResumeLang     = useAppStore((s) => s.setResumeLang);
 
   // ── Sign-in modal state ──────────────────────────────────────────────────
-  const [showAuthModal,  setShowAuthModal]  = useState(false);
-  const [showUserMenu,   setShowUserMenu]   = useState(false);
-  const [emailInput,     setEmailInput]     = useState('');
-  const [linkSent,       setLinkSent]       = useState(false);
-  const [authError,      setAuthError]      = useState('');
-  const [isSending,      setIsSending]      = useState(false);
+  const [showAuthModal,     setShowAuthModal]     = useState(false);
+  const [showUserMenu,      setShowUserMenu]       = useState(false);
+  const [showSettingsModal, setShowSettingsModal]  = useState(false);
+  const [emailInput,        setEmailInput]         = useState('');
+  const [linkSent,          setLinkSent]           = useState(false);
+  const [authError,         setAuthError]          = useState('');
+  const [isSending,         setIsSending]          = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
 
   // Auto-focus email input when modal opens
@@ -187,14 +192,50 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                     transition={{ type: 'spring', stiffness: 400, damping: 28 }}
                     className="absolute right-0 top-10 w-52 bg-slate-800 border border-slate-700/60 rounded-2xl shadow-xl shadow-black/30 overflow-hidden z-50"
                   >
+                    {/* Header: email + plan badge */}
                     <div className="px-4 py-3 border-b border-slate-700/50">
                       <p className="text-xs text-slate-400 truncate">{user.email}</p>
-                      {isPremium && (
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-brand-400">
-                          PRO
+                      {isPremium ? (
+                        <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-brand-400">
+                          <Zap className="w-2.5 h-2.5" />
+                          Pro Active
                         </span>
+                      ) : (
+                        <button
+                          className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors"
+                          onClick={() => setShowUserMenu(false)}
+                        >
+                          <Zap className="w-2.5 h-2.5" />
+                          Upgrade to Pro
+                        </button>
                       )}
                     </div>
+
+                    {/* My Resumes — coming soon */}
+                    <button
+                      disabled
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-500 cursor-not-allowed"
+                      title="Coming soon"
+                    >
+                      <FileText className="w-4 h-4 text-slate-600" />
+                      My Resumes
+                      <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-slate-600 bg-slate-700/50 rounded-full px-1.5 py-0.5">
+                        Soon
+                      </span>
+                    </button>
+
+                    {/* Settings */}
+                    <button
+                      onClick={() => { setShowUserMenu(false); setShowSettingsModal(true); }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-300 hover:text-white hover:bg-slate-700/50 transition-colors"
+                    >
+                      <Settings className="w-4 h-4 text-slate-400" />
+                      Settings
+                    </button>
+
+                    <div className="border-t border-slate-700/50" />
+
+                    {/* Sign out */}
                     <button
                       onClick={async () => {
                         setShowUserMenu(false);
@@ -230,6 +271,108 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
           BottomSheet because auth is a high-stakes action — a centered,
           full-focus dialog reduces error rate and looks more trustworthy.
       ─────────────────────────────────────────────────────────────────────── */}
+      {/* ── Settings Modal ────────────────────────────────────────────────────
+          Language preferences wired to the Zustand LangSlice.
+          Changes take effect immediately (the store is live).
+      ─────────────────────────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {showSettingsModal && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{    opacity: 0 }}
+            onClick={(e) => { if (e.target === e.currentTarget) setShowSettingsModal(false); }}
+          >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+
+            <motion.div
+              className="relative w-full max-w-sm bg-slate-900 border border-slate-700/60 rounded-3xl shadow-2xl shadow-black/40 overflow-hidden"
+              initial={{ scale: 0.95, y: 16 }}
+              animate={{ scale: 1,    y: 0  }}
+              exit={{    scale: 0.95, y: 16 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+            >
+              {/* Header */}
+              <div className="bg-gradient-to-br from-brand-900/60 to-slate-900 px-6 pt-6 pb-4">
+                <button
+                  onClick={() => setShowSettingsModal(false)}
+                  className="absolute top-4 right-4 text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center mb-3 shadow-brand">
+                  <Settings className="w-5 h-5 text-white" />
+                </div>
+                <h2 className="text-lg font-bold text-white">Settings</h2>
+                <p className="text-sm text-slate-400 mt-0.5">Language and output preferences.</p>
+              </div>
+
+              <div className="px-6 pb-6 pt-4 flex flex-col gap-5">
+
+                {/* Chat language */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    My Language
+                  </label>
+                  <p className="text-xs text-slate-500">Mac will respond in this language.</p>
+                  <select
+                    value={userLang}
+                    onChange={(e) => setUserLang(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-brand-500/60 transition-colors"
+                  >
+                    <option value="en">English</option>
+                    <option value="fr">Français</option>
+                    <option value="tl">Tagalog (Filipino)</option>
+                    <option value="hi">हिन्दी (Hindi)</option>
+                    <option value="uk">Українська (Ukrainian)</option>
+                    <option value="ru">Русский (Russian)</option>
+                    <option value="es">Español</option>
+                    <option value="de">Deutsch</option>
+                    <option value="pt">Português</option>
+                    <option value="zh">中文</option>
+                    <option value="ja">日本語</option>
+                    <option value="ar">العربية</option>
+                  </select>
+                </div>
+
+                {/* Resume output language */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    Resume Language
+                  </label>
+                  <p className="text-xs text-slate-500">The language your resume will be written in.</p>
+                  <select
+                    value={resumeLang}
+                    onChange={(e) => setResumeLang(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-brand-500/60 transition-colors"
+                  >
+                    <option value="en-CA">English (Canadian)</option>
+                    <option value="en">English (US)</option>
+                    <option value="en-GB">English (UK)</option>
+                    <option value="fr-CA">Français (Canadien)</option>
+                    <option value="fr">Français</option>
+                    <option value="tl">Tagalog (Filipino)</option>
+                    <option value="uk">Українська (Ukrainian)</option>
+                    <option value="ru">Русский (Russian)</option>
+                    <option value="es">Español</option>
+                    <option value="de">Deutsch</option>
+                    <option value="pt">Português</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={() => setShowSettingsModal(false)}
+                  className="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 text-white font-semibold text-sm py-3 rounded-xl transition-all"
+                >
+                  Save & Close
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showAuthModal && (
           <motion.div

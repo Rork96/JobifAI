@@ -48,10 +48,9 @@ import React, {
   useState,
 } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, Send, RotateCcw } from 'lucide-react';
+import { Mic, MicOff, Send } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import {
-  INTERVIEW_STEP_LABELS,
   INTERVIEW_STEP_PROMPTS,
   type MascotState,
   type ResumeData,
@@ -219,6 +218,14 @@ export const ChatPanel: React.FC = () => {
   // Scroll anchor — always at the bottom of the message list.
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Textarea DOM ref — used by the autogrow effect to measure and set height.
+  // We use a ref (not onInput) because the value can change via three paths:
+  //   1. User typing (onInput would fire)
+  //   2. Voice recognition → setInputValue() (React state update, no onInput event)
+  //   3. Post-send clear → setInputValue('') (React state update, no onInput event)
+  // A useEffect on `inputValue` handles all three uniformly.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
   // Saves the inputValue text that existed BEFORE recording started.
   // When speech recognition runs, the new transcript is APPENDED to this
   // base text (so existing typed text is preserved).
@@ -245,7 +252,7 @@ export const ChatPanel: React.FC = () => {
   const advanceStep      = useAppStore((s) => s.advanceStep);
   const setIsGenerating  = useAppStore((s) => s.setIsGenerating);
   const updateResumeData = useAppStore((s) => s.updateResumeData);
-  const resetInterview   = useAppStore((s) => s.resetInterview);
+  const skillGaps        = useAppStore((s) => s.skillGaps);
 
   // ── Speech Recognition ───────────────────────────────────────────────────────
   const {
@@ -313,6 +320,139 @@ export const ChatPanel: React.FC = () => {
     setIsWarning(true);
     warningTimerRef.current = setTimeout(() => setIsWarning(false), 2000);
   }, []);
+
+  // ── Autogrow textarea ─────────────────────────────────────────────────────
+  // WHY useEffect instead of the onInput event:
+  //   onInput only fires on native DOM keyboard/paste events.  Voice recognition
+  //   and post-send clears both update the value via React state (setInputValue),
+  //   which does NOT trigger onInput.  This effect catches every path.
+  //
+  // WHY NOT `style={{ height: 'auto' }}` on the element:
+  //   React re-applies JSX props on every render — `style={{ height: 'auto' }}`
+  //   would reset the height back to single-row on every token that arrives
+  //   in the streaming bubble (which triggers a re-render).  By keeping height
+  //   purely in the ref's inline style, React never overwrites it.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    // Step 1: collapse to auto so scrollHeight reports the natural (unconstrained) height.
+    // Without this, a shrink (e.g. after clearing the field) would never happen
+    // because scrollHeight can't go below the explicitly set height.
+    el.style.height = 'auto';
+    // Step 2: expand to content height, capped at 112px (~4.5 rows).
+    // 112px is enough to show a full voice transcript without the input bar
+    // taking over the screen on mobile.
+    el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+  }, [inputValue]);
+
+  // ── Mac talks first — initial greeting ────────────────────────────────────
+  // When the user arrives at the workspace, the chat is empty and we want Mac
+  // to break the silence immediately rather than waiting for the user to type.
+  //
+  // HOW: Fire a hidden "idle" turn to the backend and current_step: 'idle'.
+  // The system prompt's idle step instructs Mac to deliver its welcome greeting
+  // and set advance=true, which moves the state machine idle → target_title.
+  // No user bubble is added to history — we simply skip addMessage for the
+  // trigger message.
+  //
+  // STRICT MODE NOTE: React 18 Strict Mode intentionally mounts → unmounts →
+  // remounts every component.  We deliberately do NOT use a `hasGreetedRef`
+  // guard here: that would be set on the first (discarded) mount, then prevent
+  // the greeting on the real second mount.  Instead we rely solely on
+  // `messages.length > 0` — once Mac's response commits to the store the effect
+  // simply won't re-run.  The cleanup's clearTimeout safely cancels the timer
+  // between the two Strict Mode mounts so only one request ever goes out.
+  useEffect(() => {
+    // Skip if messages already exist (resume loaded from DB, or already greeted)
+    // or if somehow a generation is already in flight.
+    if (messages.length > 0) return;
+
+    // 500 ms delay — lets the chat panel entrance animation finish so the
+    // thinking dots appear after the UI is settled (not during the fade-in).
+    const timer = setTimeout(async () => {
+      setIsGenerating(true);
+      setStreamingContent('');
+
+      // Read fresh values at execution time to avoid stale closures.
+      const { userLang: lang, resumeLang: rLang, jobDescription: jd, uploadedResumeText: rawResume } =
+        useAppStore.getState();
+      const byokKey = localStorage.getItem(BYOK_STORAGE_KEY) ?? undefined;
+
+      // If the user uploaded a resume, include it so Mac can immediately analyze
+      // gaps and skip asking for info that's already in the document.
+      const hasUploadedContext = !!(rawResume?.trim());
+      const greetingMessage = hasUploadedContext
+        ? `I've uploaded my resume${jd ? ' and a target job description' : ''}. Please analyze the key gaps and tell me what to improve first. Resume text:\n${rawResume!.slice(0, 3000)}`
+        : 'hi';
+
+      let accumulated = '';
+      let finished    = false;
+      const cleanup   = () => { setStreamingContent(null); setIsGenerating(false); finished = true; };
+
+      try {
+        const res = await fetch('/api/chat/interview', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_message:         greetingMessage,
+            current_step:         'idle',
+            user_lang:            lang,
+            resume_lang:          rLang,
+            conversation_history: [],
+            resume_data_context:  {},
+            ...(byokKey ? { byok_api_key: byokKey } : {}),
+            ...(jd      ? { job_description: jd }   : {}),
+          }),
+        });
+
+        if (!res.ok || !res.body) { cleanup(); return; }
+
+        // Reuse the same SSE parsing logic as handleSend.
+        const reader  = res.body.getReader();
+        const decoder = new TextDecoder();
+        let   buffer  = '';
+
+        while (!finished) {
+          const { value, done: readerDone } = await reader.read();
+          if (readerDone) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+
+          for (const block of parts) {
+            if (finished || !block.trim()) continue;
+            const eventType  = /^event: (.+)$/m.exec(block)?.[1]?.trim();
+            const dataString = /^data: (.+)$/m.exec(block)?.[1]?.trim();
+            if (!eventType || !dataString) continue;
+
+            let payload: Record<string, unknown>;
+            try { payload = JSON.parse(dataString); } catch { continue; }
+
+            if (eventType === 'token') {
+              accumulated += (payload.text as string) ?? '';
+              setStreamingContent(accumulated);
+            } else if (eventType === 'data_extract') {
+              // If Mac's idle greeting signals advance=true, move to target_title
+              const extracted = payload as unknown as DataExtractPayload;
+              if (extracted.advance === true) advanceStep();
+            } else if (eventType === 'done') {
+              // Commit Mac's greeting as the first message in history
+              if (accumulated.trim()) addMessage({ role: 'assistant', content: accumulated.trim() });
+              cleanup();
+            } else if (eventType === 'error') {
+              cleanup();
+            }
+          }
+        }
+      } catch {
+        // Network error on greeting — fail silently; user can still type manually
+        cleanup();
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Intentionally empty — fire exactly once on mount
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -627,6 +767,52 @@ export const ChatPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* ── Skill gap banner ─────────────────────────────────────────────── */}
+      {/*
+        Shown when the onboarding ATS scan surfaced missing keywords AND the
+        conversation is still early (≤ 2 messages) so the user sees them while
+        they're still relevant.  Collapses once they've had a chance to read.
+      */}
+      <AnimatePresence>
+        {skillGaps.length > 0 && messages.length <= 2 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{   opacity: 0, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="flex-shrink-0 px-4 pt-2 pb-1 border-b border-orange-500/20 bg-orange-500/5"
+          >
+            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-orange-400 mb-1.5">
+              Missing Keywords
+            </p>
+            <div className="flex flex-wrap gap-1.5 pb-1">
+              {skillGaps.map((gap) => (
+                <button
+                  key={gap}
+                  onClick={() => {
+                    // Append "I have experience with [Keyword]. " to the textarea
+                    // and focus it — saves the user from typing.
+                    setInputValue((prev) =>
+                      prev.trim()
+                        ? `${prev.trim()} I have experience with ${gap}. `
+                        : `I have experience with ${gap}. `
+                    );
+                    textareaRef.current?.focus();
+                  }}
+                  className="text-[11px] font-medium text-orange-300 bg-orange-500/10 border border-orange-500/25 hover:bg-orange-500/20 hover:border-orange-400/50 hover:text-orange-200 rounded-full px-2.5 py-0.5 transition-colors cursor-pointer"
+                  title={`Click to add "${gap}" to your message`}
+                >
+                  + {gap}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500 dark:text-gray-600 mt-0.5">
+              Tap a keyword to add it to your message.
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── Message list ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto scrollbar-hidden px-4 py-4 space-y-3 min-h-0">
 
@@ -839,7 +1025,16 @@ export const ChatPanel: React.FC = () => {
           )}
 
           {/* ── Textarea ────────────────────────────────────────────── */}
+          {/*
+           * Height is managed entirely by the textareaRef + autogrow useEffect.
+           * Do NOT add `style={{ height: 'auto' }}` here — React re-applies JSX
+           * props on every render, which would reset the height to a single row
+           * every time a streaming token arrives (each token causes a re-render).
+           * The Send and Mic buttons stay pinned to the bottom via `items-end`
+           * on the parent flex container, so they track the textarea's growth.
+           */}
           <textarea
+            ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -852,7 +1047,9 @@ export const ChatPanel: React.FC = () => {
             disabled={currentStep === 'complete'}
             className={[
               'flex-1 bg-transparent resize-none text-sm outline-none',
-              'placeholder:text-gray-400 max-h-28 scrollbar-hidden leading-relaxed py-1',
+              // overflow-y-auto: shows scrollbar only when content exceeds max-h-28
+              // (i.e. when a very long voice transcript is dictated)
+              'placeholder:text-gray-400 max-h-28 overflow-y-auto scrollbar-hidden leading-relaxed py-1',
               'disabled:opacity-50',
               // During voice capture, text appears in a warmer tone to reinforce
               // that it's being dictated (not manually typed)
@@ -860,12 +1057,6 @@ export const ChatPanel: React.FC = () => {
                 ? 'text-red-700 dark:text-red-300'
                 : 'text-gray-900 dark:text-gray-100',
             ].join(' ')}
-            style={{ height: 'auto' }}
-            onInput={(e) => {
-              const el = e.currentTarget;
-              el.style.height = 'auto';
-              el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
-            }}
           />
 
           {/* ── Send button ─────────────────────────────────────────── */}
@@ -880,27 +1071,6 @@ export const ChatPanel: React.FC = () => {
           </motion.button>
         </div>
 
-        {/* ── DEV controls ─────────────────────────────────────────────── */}
-        {import.meta.env.DEV && (
-          <div className="mt-2 flex items-center justify-between px-1">
-            <button
-              onClick={advanceStep}
-              className="text-xs text-brand-500 hover:text-brand-700 transition-colors font-medium"
-            >
-              [DEV] Next step →
-            </button>
-            <span className="text-[10px] text-gray-300 dark:text-gray-600 font-mono">
-              {INTERVIEW_STEP_LABELS[currentStep]} · {mascotState}
-            </span>
-            <button
-              onClick={resetInterview}
-              className="text-xs text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-1"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );

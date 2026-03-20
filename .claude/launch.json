@@ -10,9 +10,13 @@
     },
     {
       "name": "backend",
-      "runtimeExecutable": "docker",
-      "runtimeArgs": ["compose", "up", "backend", "--build"],
-      "port": 8000
+      "runtimeExecutable": "/Users/rorkpashagmail.com/Documents/JobifAI/.claude/worktrees/sad-brattain/.venv/bin/python3",
+      "runtimeArgs": [
+        "-c",
+        "import os, sys; wd='/Users/rorkpashagmail.com/Documents/JobifAI/.claude/worktrees/sad-brattain'; sys.path.insert(0, wd); os.chdir(wd); [os.environ.setdefault(k.strip(), v.strip()) for line in open(wd+'/.env') if '=' in line and not line.startswith('#') for k, v in [line.strip().split('=', 1)]]; os.execv(wd+'/.venv/bin/uvicorn', ['uvicorn', 'backend.main:app', '--reload', '--host', '0.0.0.0', '--port', '8000'])"
+      ],
+      "port": 8000,
+      "autoPort": false
     }
   ]
 }
