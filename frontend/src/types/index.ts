@@ -203,3 +203,22 @@ export interface ChatMessage {
   content: string;
   timestamp: number;  // Unix milliseconds — used for sorting and relative timestamps
 }
+
+// ── Mascot Emotional State ────────────────────────────────────────────────────
+
+/**
+ * The five emotional states that drive Mac's animations.
+ *
+ * Computed in ChatPanel from UI + store state and passed as a single prop
+ * to MacMascot — keeps the mascot component a pure presenter.
+ *
+ *   idle       — default; slow float, calm glow
+ *   listening  — mic is active; sound-wave rings, attentive posture
+ *   processing — AI call started, no tokens yet; thinking bubble
+ *   talking    — SSE tokens streaming; bouncy speech animation
+ *   warning    — backend scrubbed a forbidden HR field; head-shake + amber glow
+ *
+ * State priority order (highest → lowest):
+ *   warning > listening > processing > talking > idle
+ */
+export type MascotState = 'idle' | 'listening' | 'processing' | 'talking' | 'warning';

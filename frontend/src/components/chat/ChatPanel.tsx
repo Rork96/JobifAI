@@ -1,203 +1,309 @@
 /**
  * components/chat/ChatPanel.tsx — The Interview Conversation UI
  * ─────────────────────────────────────────────────────────────────────────────
- * Renders:
- *   1. Mac the Mascot (expression + thinking state from the store)
- *   2. Step context prompt (what Mac is currently asking)
- *   3. Scrollable message list (user bubbles right, Mac bubbles left)
- *   4. Text input + Send button
- *   5. DEV: Step-advance button for testing the state machine manually
+ * This panel is the primary interaction surface for the entire product.
+ * It wires together four concerns in one well-bounded component:
  *
- * ALL interview state lives in the Zustand store — ChatPanel is a
- * "controlled" component that only reads/writes the store.
- * The ONLY local state is the textarea input value and the live streaming
- * buffer (changes on every token — too frequent for global store).
+ *   1. SSE STREAMING  — Calls POST /api/chat/interview and consumes the
+ *                       Server-Sent Events stream in real-time.
  *
- * SSE STREAMING DESIGN:
- *   The AI endpoint returns a Server-Sent Events stream (text/event-stream).
- *   We cannot use the browser's EventSource API here because that only supports
- *   GET requests — we need POST with a JSON body.  Instead we use:
+ *   2. VOICE INPUT    — Web Speech API via useSpeechRecognition hook.
+ *                       Live interim transcript appears in the textarea as
+ *                       the user speaks; final text is committed on silence.
  *
- *     fetch() → response.body (ReadableStream) → getReader() → decode chunks
+ *   3. HAPTIC FEEDBACK — navigator.vibrate([10,30,10]) fires the instant a
+ *                        new data_extract block adds validated resume data.
+ *                        The double-pulse pattern (on→pause→on) signals
+ *                        "something was saved" without interrupting focus.
  *
- *   Events arriving from the server:
- *     event: token        { text: "..." }       — stream to typewriter buffer
- *     event: data_extract { step, advance, data } — update resume + step machine
- *     event: done         {}                    — commit message, clear buffer
- *     event: error        { message: "..." }    — show error, clean up
+ *   4. MASCOT STATE   — Computes `MascotState` from local + store signals
+ *                       and passes it to MacMascot as a single prop so the
+ *                       mascot always reflects the live system state.
  *
- * STREAMING UX:
- *   Phase 1 — "Thinking":  isGenerating=true, streamingContent=''
- *             → Show bouncing dots (Mac is calling the API)
- *   Phase 2 — "Streaming": isGenerating=true, streamingContent='Hello…'
- *             → Show live bubble with blinking cursor (tokens arriving)
- *   Phase 3 — "Done":      addMessage() commits to store, both cleared
- *             → Bubble becomes a real message in the list
+ * LOCAL STATE (kept out of the global Zustand store intentionally):
+ *   inputValue       — Textarea content (changes on every keystroke)
+ *   streamingContent — Live SSE typewriter buffer (changes on every token)
+ *   isListening      — Microphone recording state (derived from the hook)
+ *   isWarning        — Briefly true when backend scrubs a forbidden HR field
+ *
+ * These are local because they change at high frequency and only this component
+ * cares about them.  Storing them globally would trigger DocumentPreview
+ * re-renders on every keystroke and every token — wasteful.
+ *
+ * SSE STREAMING PHASES:
+ *   Phase 1 — Thinking  (isGenerating=true, streamingContent='')
+ *             → MacMascot shows 'processing' state + bouncing dots in the list
+ *   Phase 2 — Streaming (isGenerating=true, streamingContent has text)
+ *             → MacMascot shows 'talking' state + live bubble with cursor
+ *   Phase 3 — Done      (addMessage commits text, both flags cleared)
+ *             → MacMascot returns to 'idle', streaming bubble → final message
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, RotateCcw } from 'lucide-react';
+import { Mic, MicOff, Send, RotateCcw } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
-import { INTERVIEW_STEP_PROMPTS, INTERVIEW_STEP_LABELS, type ResumeData } from '@/types';
+import {
+  INTERVIEW_STEP_LABELS,
+  INTERVIEW_STEP_PROMPTS,
+  type MascotState,
+  type ResumeData,
+} from '@/types';
 import { MacMascot } from '@/components/mascot/MacMascot';
+import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 
-// ── API Types ─────────────────────────────────────────────────────────────────
+// ── API types ─────────────────────────────────────────────────────────────────
 
-/** Shape of the POST /api/chat/interview request body (mirrors InterviewRequest in Python). */
+/** Mirrors InterviewRequest in backend/routers/interview.py */
 interface InterviewRequestBody {
   user_message:         string;
   current_step:         string;
   user_lang:            string;
   resume_lang:          string;
-  /** Prior messages EXCLUDING the current user turn — backend adds user_message separately. */
   conversation_history: Array<{ role: 'user' | 'assistant'; content: string }>;
   resume_data_context:  Partial<ResumeData>;
   byok_api_key?:        string;
 }
 
-/** Parsed payload of a `data_extract` SSE event. */
+/** Parsed payload of a `data_extract` SSE event (mirrors ai_service.py output). */
 interface DataExtractPayload {
-  step:    string;
-  advance: boolean;
-  data:    Partial<ResumeData>;
-  /** Optional warning flag from the backend (e.g. sentinel_missing). */
-  _warn?:  string;
+  step:      string;
+  advance:   boolean;
+  data:      Partial<ResumeData>;
+  _warn?:    string;
+  _error?:   string;
+  /** Populated by _scrub_forbidden_fields when a Canadian HR field was removed. */
+  _scrubbed?: string[];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Haptic feedback helper ────────────────────────────────────────────────────
 
-/** Converts a Unix timestamp to a human-readable relative time (e.g. "2m ago"). */
+/**
+ * Fire the navigator.vibrate() API with a given pattern (milliseconds).
+ *
+ * WHY a helper instead of inline calls?
+ *   1. The API is not available on all platforms (desktop browsers, iOS Safari
+ *      before 16.4) — this guard prevents silent errors.
+ *   2. Centralising patterns here makes it easy to tweak them globally.
+ *   3. In tests / Cypress, vibration is a no-op (navigator.vibrate is undefined).
+ *
+ * PATTERN `[10, 30, 10]`:
+ *   ON for 10ms → silent for 30ms → ON for 10ms
+ *   The double-tap pattern is internationally recognised as "confirmed" or
+ *   "saved" — like a credit-card reader beeping twice after a payment.
+ */
+const hapticFeedback = (pattern: number[] = [10, 30, 10]): void => {
+  if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+    navigator.vibrate(pattern);
+  }
+};
+
+// ── Relative timestamp helper ─────────────────────────────────────────────────
 const formatRelativeTime = (timestamp: number): string => {
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60)   return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  return `${Math.floor(seconds / 3600)}h ago`;
+  const s = Math.floor((Date.now() - timestamp) / 1000);
+  if (s < 60)   return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export const ChatPanel: React.FC = () => {
 
   // ── Local state ─────────────────────────────────────────────────────────────
-  // `inputValue` is local because it changes on every keystroke — we don't
-  // want DocumentPreview re-rendering on every keypress.
-  const [inputValue, setInputValue] = useState('');
-
-  // `streamingContent` holds the live typewriter buffer.  It is local because:
-  //   • It changes on every token (potentially 20–50× per second)
-  //   • Only ChatPanel needs to render it
-  //   • Putting it in global store would trigger re-renders in DocumentPreview
-  // null  = not streaming
-  // ''    = streaming started but no tokens yet (show dots)
-  // text  = tokens arriving (show live bubble)
+  const [inputValue,       setInputValue]      = useState('');
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
 
-  // AbortController lets us cancel the fetch if the component unmounts mid-stream
-  // or if the user starts a new request before the previous one finishes.
+  // `isWarning` is true for ~2 seconds when the backend scrubs a forbidden
+  // HR field from the data_extract JSON.  Drives MacMascot's 'warning' state.
+  const [isWarning,        setIsWarning]        = useState(false);
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Refs ────────────────────────────────────────────────────────────────────
+  // AbortController cancels the in-flight fetch on unmount or new request.
   const abortRef = useRef<AbortController | null>(null);
 
-  // Ref to the bottom of the message list — used for auto-scroll.
+  // Scroll anchor — always at the bottom of the message list.
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Saves the inputValue text that existed BEFORE recording started.
+  // When speech recognition runs, the new transcript is APPENDED to this
+  // base text (so existing typed text is preserved).
+  const baseSpeechTextRef = useRef('');
+
   // ── Store subscriptions ──────────────────────────────────────────────────────
-  // Subscribe to each field individually — this component only re-renders
-  // when one of THESE specific values changes, not on any store update.
-  const currentStep  = useAppStore((s) => s.currentStep);
-  const messages     = useAppStore((s) => s.messages);
-  const isGenerating = useAppStore((s) => s.isGenerating);
-  const userLang     = useAppStore((s) => s.userLang);
-  const resumeLang   = useAppStore((s) => s.resumeLang);
-  const resumeData   = useAppStore((s) => s.resumeData);
+  const currentStep      = useAppStore((s) => s.currentStep);
+  const messages         = useAppStore((s) => s.messages);
+  const isGenerating     = useAppStore((s) => s.isGenerating);
+  const userLang         = useAppStore((s) => s.userLang);
+  const resumeLang       = useAppStore((s) => s.resumeLang);
+  const resumeData       = useAppStore((s) => s.resumeData);
 
-  // Actions — Zustand guarantees these are stable references (never change),
-  // so they're safe to use in deps arrays without causing infinite loops.
-  const addMessage      = useAppStore((s) => s.addMessage);
-  const advanceStep     = useAppStore((s) => s.advanceStep);
-  const setIsGenerating = useAppStore((s) => s.setIsGenerating);
+  // Actions — Zustand guarantees stable references; safe in dependency arrays.
+  const addMessage       = useAppStore((s) => s.addMessage);
+  const advanceStep      = useAppStore((s) => s.advanceStep);
+  const setIsGenerating  = useAppStore((s) => s.setIsGenerating);
   const updateResumeData = useAppStore((s) => s.updateResumeData);
-  const resetInterview  = useAppStore((s) => s.resetInterview);
+  const resetInterview   = useAppStore((s) => s.resetInterview);
 
-  // ── Cleanup on unmount ────────────────────────────────────────────────────────
-  // If the user navigates away while Mac is responding, abort the fetch so we
-  // don't leak network connections or update unmounted component state.
+  // ── Speech Recognition ───────────────────────────────────────────────────────
+  const {
+    isSupported:      isSpeechSupported,
+    isListening,
+    interimText,
+    finalText,
+    permissionDenied: micPermissionDenied,
+    startListening,
+    stopListening,
+  } = useSpeechRecognition(userLang);
+
+  // ── Mic button handler ───────────────────────────────────────────────────────
+  const handleMicToggle = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      // Save the current inputValue so we can append the transcript to it
+      baseSpeechTextRef.current = inputValue;
+      startListening();
+    }
+  }, [isListening, inputValue, startListening, stopListening]);
+
+  // ── Live interim transcript → textarea ────────────────────────────────────
+  // As the user speaks, update the textarea in real-time with the interim text.
+  // This gives the "typing via voice" typewriter effect.
+  // The interim disappears on silence (SpeechRecognition fires `onend`).
+  useEffect(() => {
+    if (isListening && interimText) {
+      // Show base + interim in textarea so the user sees the live transcript
+      setInputValue(baseSpeechTextRef.current
+        ? `${baseSpeechTextRef.current} ${interimText}`
+        : interimText
+      );
+    }
+  }, [interimText, isListening]);
+
+  // ── Committed final transcript → inputValue ───────────────────────────────
+  // When the recognition session ends (on silence or manual stop), the hook
+  // fires one last `finalText` update.  We commit it to the input value.
+  const prevFinalRef = useRef('');
+  useEffect(() => {
+    if (finalText && finalText !== prevFinalRef.current) {
+      const appended = baseSpeechTextRef.current
+        ? `${baseSpeechTextRef.current} ${finalText}`.trim()
+        : finalText.trim();
+      setInputValue(appended);
+      // Update base so successive final chunks accumulate correctly
+      baseSpeechTextRef.current = appended;
+      prevFinalRef.current = finalText;
+    }
+  }, [finalText]);
+
+  // Reset the base text tracker when a new recording session starts
+  useEffect(() => {
+    if (!isListening) {
+      prevFinalRef.current = '';
+    }
+  }, [isListening]);
+
+  // ── Warning auto-reset ────────────────────────────────────────────────────
+  const triggerWarning = useCallback(() => {
+    // Clear any existing timer first to restart the 2 s window
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+    setIsWarning(true);
+    warningTimerRef.current = setTimeout(() => setIsWarning(false), 2000);
+  }, []);
+
+  // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
     };
   }, []);
 
-  // ── Auto-scroll ──────────────────────────────────────────────────────────────
-  // Scrolls to the latest message whenever messages or the streaming buffer
-  // changes.  We scroll on streamingContent changes too so the live bubble
-  // stays in view as it grows.
+  // ── Auto-scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
 
-  // ── Send handler ─────────────────────────────────────────────────────────────
+  // ── Mascot state computation ──────────────────────────────────────────────
+  /**
+   * A single derived value that drives MacMascot's entire visual state.
+   *
+   * Priority order (highest first):
+   *   warning    — Brief HR compliance feedback
+   *   listening  — Mic is hot; always highest precedence after warning
+   *   processing — API call started, no tokens yet
+   *   talking    — Tokens are actively streaming
+   *   idle       — Default
+   */
+  const mascotState = useMemo((): MascotState => {
+    if (isWarning)                              return 'warning';
+    if (isListening)                            return 'listening';
+    if (isGenerating && streamingContent === '') return 'processing';
+    if (streamingContent)                       return 'talking';
+    return 'idle';
+  }, [isWarning, isListening, isGenerating, streamingContent]);
+
+  // ── Send handler (SSE streaming) ──────────────────────────────────────────
   const handleSend = async () => {
     const trimmed = inputValue.trim();
     if (!trimmed || isGenerating) return;
 
-    // ── Snapshot state BEFORE any mutations ────────────────────────────────────
-    // `messages` in the store doesn't include the new user message yet.
-    // We snapshot it now to use as the `conversation_history` for this request
-    // (the backend wants history EXCLUDING the current user turn).
-    //
-    // Using getState() directly (not the closure `messages`) ensures we get the
-    // absolute latest slice even if React batches multiple renders.
+    // Stop mic if user taps send while recording
+    if (isListening) stopListening();
+
+    // Snapshot state BEFORE any store mutations.
+    // The backend wants history EXCLUDING the current user turn —
+    // `prevMessages` is the conversation so far, not including `trimmed`.
     const prevMessages = useAppStore.getState().messages;
-    const step         = currentStep;   // capture before any step advances
+    const step         = currentStep;
     const langUser     = userLang;
     const langResume   = resumeLang;
     const ctxData      = resumeData;
 
-    // ── 1. Optimistic UI: add user message immediately ─────────────────────────
-    // The user sees their message appear right away — no waiting for the API.
+    // 1. Optimistic UI — user sees their message immediately
     addMessage({ role: 'user', content: trimmed });
     setInputValue('');
+    baseSpeechTextRef.current = '';
 
-    // ── 2. Transition into "thinking" state ───────────────────────────────────
+    // 2. Enter "thinking" phase
     setIsGenerating(true);
-    setStreamingContent('');  // '' = streaming started, no tokens yet → show dots
+    setStreamingContent('');  // '' = streaming started, no tokens yet (shows dots)
 
-    // Cancel any previous in-flight request (shouldn't happen in normal usage
-    // since the send button is disabled while isGenerating, but defensive coding).
+    // Cancel any previous in-flight request (defensive; send button is disabled
+    // during generation, but handles edge cases like rapid double-submit)
     abortRef.current?.abort();
     abortRef.current = new AbortController();
 
-    // Accumulates the full streamed conversational text for this turn.
-    // We keep it in a local variable (not state) to avoid stale closure issues —
-    // each frame of the event loop reads the latest value.
-    let accumulated = '';
-    let finished    = false;  // guard against processing events after done/error
+    let accumulated = '';   // Collects the full conversational text for this turn
+    let finished    = false; // Guards against processing events after done/error
 
-    // ── Cleanup helper — called on done, error, or exception ──────────────────
     const cleanup = () => {
       setStreamingContent(null);
       setIsGenerating(false);
       finished = true;
     };
 
-    // ── 3. Build request body ─────────────────────────────────────────────────
     const body: InterviewRequestBody = {
       user_message:         trimmed,
       current_step:         step,
       user_lang:            langUser,
       resume_lang:          langResume,
-      // Pass prior messages (not including the current user turn we just added)
       conversation_history: prevMessages.map((m) => ({
         role:    m.role,
         content: m.content,
       })),
-      // Context-only: helps the AI know what's already been collected so it can
-      // avoid re-asking things. Not persisted server-side.
       resume_data_context: ctxData,
     };
 
     try {
-      // ── 4. Fetch with SSE response ──────────────────────────────────────────
       const res = await fetch('/api/chat/interview', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -210,83 +316,87 @@ export const ChatPanel: React.FC = () => {
         throw new Error(errText);
       }
 
-      // ── 5. Read the SSE stream ────────────────────────────────────────────
-      // ReadableStream → getReader() → decode chunks → parse SSE events.
-      //
-      // SSE format:
-      //   event: <type>\n
-      //   data: <json>\n
-      //   \n              ← blank line = end of event
-      //
-      // Multiple events can arrive in a single chunk, and a single event
-      // can be split across chunks — we use a `buffer` to handle both.
+      // ── SSE Stream reader ───────────────────────────────────────────────
+      // SSE format: "event: <type>\ndata: <json>\n\n"
+      // A single chunk from the network can contain 0, 1, or many events.
+      // We use a `buffer` to handle events split across chunk boundaries.
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
-      let buffer    = '';
+      let   buffer  = '';
 
       while (!finished) {
         const { value, done: readerDone } = await reader.read();
         if (readerDone) break;
 
-        // Append the new chunk to our buffer and split on the SSE event delimiter.
         buffer += decoder.decode(value, { stream: true });
 
-        // Split on double-newline (SSE event boundary).
-        // `parts.pop()` retains the incomplete trailing fragment in `buffer`.
+        // Split on the SSE event delimiter (double newline).
+        // `parts.pop()` keeps the incomplete trailing fragment in `buffer`.
         const parts = buffer.split('\n\n');
         buffer = parts.pop() ?? '';
 
         for (const block of parts) {
           if (finished || !block.trim()) continue;
 
-          // Extract the `event:` and `data:` lines from the block.
-          // We use regex to be robust against extra whitespace / ordering.
           const eventType  = /^event: (.+)$/m.exec(block)?.[1]?.trim();
           const dataString = /^data: (.+)$/m.exec(block)?.[1]?.trim();
-
           if (!eventType || !dataString) continue;
 
-          // Parse the JSON payload — skip the block if malformed.
           let payload: Record<string, unknown>;
           try { payload = JSON.parse(dataString); }
           catch { continue; }
 
           switch (eventType) {
-            // ── token: a chunk of conversational text ──────────────────────
+
+            // ── token — conversational text chunk ────────────────────────
             case 'token': {
               const chunk = (payload.text as string) ?? '';
               accumulated += chunk;
-              // Update the live streaming bubble immediately.
-              // React batches these setStates in concurrent mode so the UI
-              // doesn't thrash even at 50 tokens/second.
+              // Update the live streaming bubble — React batches these
+              // setState calls in concurrent mode to avoid thrashing
               setStreamingContent(accumulated);
               break;
             }
 
-            // ── data_extract: structured resume data + step-advance signal ─
+            // ── data_extract — structured resume update + step control ───
             case 'data_extract': {
               const extracted = payload as unknown as DataExtractPayload;
 
-              // Merge extracted fields into the global resume data store.
-              // The backend's sanitise_extracted_data() has already allowlisted
-              // the keys so we don't need to re-validate here.
-              if (extracted.data && Object.keys(extracted.data).length > 0) {
-                updateResumeData(extracted.data);
+              // ── Check for forbidden HR field scrubbing ─────────────────
+              // If the backend's _scrub_forbidden_fields() removed something,
+              // trigger the warning state and haptic pattern for 2 s.
+              if (extracted._scrubbed && extracted._scrubbed.length > 0) {
+                triggerWarning();
+                // Distinct pattern for warning: single long buzz rather than
+                // the success double-tap — feels different in the hand.
+                hapticFeedback([60]);
               }
 
-              // Advance the interview step machine if the AI says it's ready.
-              // We advance AFTER merging data so DocumentPreview reflects the
-              // new data in the new step (not the previous one).
+              // ── Merge validated resume data into the store ─────────────
+              if (extracted.data && Object.keys(extracted.data).length > 0) {
+                updateResumeData(extracted.data);
+
+                // ── Haptic feedback: validated data added ─────────────────
+                // Fire ONLY when real data arrives (not on an empty data: {}).
+                // The [10, 30, 10] double-pulse signals "your answer was saved"
+                // — gives the user tactile confirmation even when they're not
+                // looking at the screen (common when speaking via mic).
+                hapticFeedback([10, 30, 10]);
+              }
+
+              // ── Advance the interview state machine ────────────────────
+              // `advance: true` means "I have what I need for this step;
+              // move to the next one."  We advance AFTER merging data so
+              // DocumentPreview reflects the new data before the step label
+              // in the TopBar updates.
               if (extracted.advance === true) {
                 advanceStep();
               }
               break;
             }
 
-            // ── done: stream complete, commit the message ───────────────────
+            // ── done — stream complete, commit message to history ────────
             case 'done': {
-              // Commit the full accumulated text as a real message in the store.
-              // This replaces the live streaming bubble with a permanent bubble.
               if (accumulated.trim()) {
                 addMessage({ role: 'assistant', content: accumulated.trim() });
               }
@@ -294,13 +404,10 @@ export const ChatPanel: React.FC = () => {
               break;
             }
 
-            // ── error: AI service failure ───────────────────────────────────
+            // ── error — AI service failure ───────────────────────────────
             case 'error': {
-              const errMsg = (payload.message as string) ?? 'Something went wrong.';
-              addMessage({
-                role:    'assistant',
-                content: `⚠️ ${errMsg}`,
-              });
+              const msg = (payload.message as string) ?? 'Something went wrong.';
+              addMessage({ role: 'assistant', content: `⚠️ ${msg}` });
               cleanup();
               break;
             }
@@ -309,13 +416,11 @@ export const ChatPanel: React.FC = () => {
       }
 
     } catch (err: unknown) {
-      // AbortError = intentional cancel (unmount or new request) — silent.
       if ((err as Error)?.name === 'AbortError') {
-        // Don't show an error — this was intentional
+        // Intentional cancel (unmount / new request) — silent cleanup
       } else {
-        // Real network/parse error — show whatever was streamed so far
+        // Real network error — show whatever we managed to stream
         if (accumulated.trim()) {
-          // Partial response is better than nothing
           addMessage({ role: 'assistant', content: accumulated.trim() });
         } else {
           addMessage({
@@ -329,23 +434,31 @@ export const ChatPanel: React.FC = () => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Send on Enter; allow Shift+Enter for multi-line messages
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   };
 
+  // ── Derived: is the textarea in "voice capture" mode? ─────────────────────
+  // When listening, style the textarea differently to signal "voice mode".
+  const isVoiceActive = isListening;
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full min-h-0 bg-white dark:bg-surface-dark">
 
-      {/* ── Header: Mascot + current step prompt ─────────────────────────── */}
+      {/* ── Header: Mascot + step prompt ────────────────────────────────── */}
       <div className="flex-shrink-0 px-5 pt-6 pb-4 border-b border-gray-100 dark:border-gray-800">
         <div className="flex flex-col items-center gap-3">
-          <MacMascot currentStep={currentStep} isThinking={isGenerating} />
 
-          {/* Step context prompt — changes per step, slides in with animation */}
+          {/* MacMascot receives the full state for emotional synchronisation */}
+          <MacMascot
+            currentStep={currentStep}
+            state={mascotState}
+          />
+
+          {/* Step context prompt — slides in/out on step change */}
           <AnimatePresence mode="wait">
             <motion.p
               key={currentStep}
@@ -359,10 +472,13 @@ export const ChatPanel: React.FC = () => {
             </motion.p>
           </AnimatePresence>
 
-          {/* Language indicator — subtle badge showing USER_LANG */}
+          {/* Language indicator */}
           <div className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
             <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-            <span>Chatting in <strong className="font-medium">{userLang}</strong></span>
+            <span>
+              Chatting in{' '}
+              <strong className="font-medium">{userLang}</strong>
+            </span>
           </div>
         </div>
       </div>
@@ -370,7 +486,7 @@ export const ChatPanel: React.FC = () => {
       {/* ── Message list ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto scrollbar-hidden px-4 py-4 space-y-3 min-h-0">
 
-        {/* Empty state — shown before the first message */}
+        {/* Empty state */}
         {messages.length === 0 && !streamingContent && (
           <motion.div
             className="flex flex-col items-center justify-center h-full gap-3 text-center py-8"
@@ -379,7 +495,9 @@ export const ChatPanel: React.FC = () => {
             transition={{ delay: 0.3 }}
           >
             <p className="text-sm text-gray-400 dark:text-gray-500">
-              Type your first message to begin ↓
+              {isSpeechSupported
+                ? 'Type or tap the mic to begin ↓'
+                : 'Type your first message to begin ↓'}
             </p>
           </motion.div>
         )}
@@ -389,32 +507,27 @@ export const ChatPanel: React.FC = () => {
           {messages.map((msg) => (
             <motion.div
               key={msg.id}
-              layout                        // Smooth reflow as new messages push old ones up
+              layout
               initial={{ opacity: 0, y: 14, scale: 0.96 }}
               animate={{ opacity: 1, y: 0,  scale: 1 }}
               exit={{   opacity: 0 }}
               transition={{ type: 'spring', stiffness: 320, damping: 28 }}
               className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              {/* Mac avatar for assistant messages */}
               {msg.role === 'assistant' && (
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center mt-1">
                   <span className="text-xs">🐾</span>
                 </div>
               )}
-
               <div className="max-w-[78%] flex flex-col gap-1">
-                <div
-                  className={[
-                    'px-4 py-2.5 text-sm leading-relaxed',
-                    msg.role === 'user'
-                      ? 'bg-brand-600 text-white rounded-2xl rounded-br-md ml-auto'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md',
-                  ].join(' ')}
-                >
+                <div className={[
+                  'px-4 py-2.5 text-sm leading-relaxed',
+                  msg.role === 'user'
+                    ? 'bg-brand-600 text-white rounded-2xl rounded-br-md ml-auto'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md',
+                ].join(' ')}>
                   {msg.content}
                 </div>
-
                 <span className={`text-[10px] text-gray-400 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
                   {formatRelativeTime(msg.timestamp)}
                 </span>
@@ -423,12 +536,10 @@ export const ChatPanel: React.FC = () => {
           ))}
         </AnimatePresence>
 
-        {/* ── Phase 1: Thinking dots ─────────────────────────────────────────
-          Shown when generating has started but the first token hasn't arrived.
-          `streamingContent === ''` means we're in this "waiting" phase.
-          Once tokens arrive, streamingContent becomes a non-empty string,
-          this disappears, and the live bubble below takes over.
-        ─────────────────────────────────────────────────────────────────── */}
+        {/* ── Phase 1: Thinking dots ─────────────────────────────────────
+          Shown when generation has started but no tokens have arrived yet.
+          `streamingContent === ''` is the "waiting" phase signal.
+        ──────────────────────────────────────────────────────────────── */}
         <AnimatePresence>
           {isGenerating && streamingContent === '' && (
             <motion.div
@@ -454,15 +565,11 @@ export const ChatPanel: React.FC = () => {
           )}
         </AnimatePresence>
 
-        {/* ── Phase 2: Live streaming bubble ─────────────────────────────────
-          Once tokens arrive (streamingContent becomes non-empty), this bubble
-          replaces the dots and fills in the text in real-time.
-          A blinking cursor at the end signals that more is coming.
-
-          This is a local-state render — does NOT go through the Zustand store.
-          When `done` is received, `addMessage()` commits it to the store and
-          this bubble unmounts, replaced by the new item in the messages array.
-        ─────────────────────────────────────────────────────────────────── */}
+        {/* ── Phase 2: Live streaming bubble ────────────────────────────
+          Tokens arrive → fill this bubble in real-time with a blinking cursor.
+          When `done` fires, this unmounts and a committed message takes over.
+          Local state only — never touches the Zustand store.
+        ──────────────────────────────────────────────────────────────── */}
         <AnimatePresence>
           {streamingContent && (
             <motion.div
@@ -476,7 +583,7 @@ export const ChatPanel: React.FC = () => {
               </div>
               <div className="max-w-[78%] bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed">
                 {streamingContent}
-                {/* Blinking text cursor — signals the stream is still active */}
+                {/* Blinking text cursor — signals the stream is still open */}
                 <motion.span
                   className="inline-block w-0.5 h-4 bg-brand-400 ml-0.5 align-middle"
                   animate={{ opacity: [1, 0, 1] }}
@@ -487,31 +594,137 @@ export const ChatPanel: React.FC = () => {
           )}
         </AnimatePresence>
 
-        {/* Scroll anchor — always at the bottom of the list */}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ── Input bar ────────────────────────────────────────────────────── */}
+      {/* ── Input bar ─────────────────────────────────────────────────────── */}
       <div className="flex-shrink-0 px-4 py-3 border-t border-gray-100 dark:border-gray-800">
 
-        <div className="flex items-end gap-2 bg-gray-50 dark:bg-gray-800/60 rounded-2xl px-4 py-2 border border-gray-100 dark:border-gray-700 focus-within:border-brand-400 transition-colors">
+        {/* ── Voice capture banner ─────────────────────────────────────── */}
+        {/*
+          Appears above the input while the mic is active.
+          Uses AnimatePresence so it slides in and out smoothly.
+        */}
+        <AnimatePresence>
+          {isListening && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{   opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="mb-2 overflow-hidden"
+            >
+              <div className="flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2">
+                {/* Animated red dot — universal "recording" signal */}
+                <motion.span
+                  className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ repeat: Infinity, duration: 0.8 }}
+                />
+                <span className="text-xs text-red-600 dark:text-red-400 font-medium">
+                  Listening… speak now
+                </span>
+                <span className="ml-auto text-[10px] text-red-400 dark:text-red-500">
+                  Tap mic or pause to stop
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── Main input row ────────────────────────────────────────────── */}
+        <div className={[
+          'flex items-end gap-2 rounded-2xl px-3 py-2 border transition-colors',
+          isVoiceActive
+            // Voice mode: red border to match the recording banner
+            ? 'bg-red-50 dark:bg-red-900/10 border-red-300 dark:border-red-700'
+            : 'bg-gray-50 dark:bg-gray-800/60 border-gray-100 dark:border-gray-700 focus-within:border-brand-400',
+        ].join(' ')}>
+
+          {/* ── Mic button ───────────────────────────────────────────── */}
+          {/*
+            Three visual states:
+              • Not supported  → hidden (the button simply doesn't render)
+              • Supported, idle → mic icon, brand colour
+              • Listening       → mic-off icon, red, pulsing ring
+              • Permission denied → mic icon with tooltip, muted colour
+          */}
+          {isSpeechSupported && (
+            <div className="relative flex-shrink-0 mb-0.5">
+              <motion.button
+                onClick={handleMicToggle}
+                disabled={currentStep === 'complete' || isGenerating}
+                whileTap={{ scale: 0.85 }}
+                title={
+                  micPermissionDenied
+                    ? 'Microphone access denied — enable it in browser settings'
+                    : isListening
+                    ? 'Stop recording'
+                    : 'Start voice input'
+                }
+                className={[
+                  'w-8 h-8 rounded-full flex items-center justify-center transition-colors',
+                  isListening
+                    ? 'bg-red-500 text-white shadow-md'
+                    : micPermissionDenied
+                    ? 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
+                    : 'bg-brand-100 dark:bg-brand-900/40 text-brand-600 dark:text-brand-400 hover:bg-brand-200 dark:hover:bg-brand-900/60',
+                ].join(' ')}
+                aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+                aria-pressed={isListening}
+              >
+                {isListening
+                  ? <MicOff className="w-3.5 h-3.5" />
+                  : <Mic    className="w-3.5 h-3.5" />
+                }
+              </motion.button>
+
+              {/* Pulsing ring overlay — reinforces "hot mic" status */}
+              <AnimatePresence>
+                {isListening && (
+                  <motion.span
+                    className="absolute inset-0 rounded-full border-2 border-red-400 pointer-events-none"
+                    initial={{ scale: 1, opacity: 0.8 }}
+                    animate={{ scale: 1.7, opacity: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ repeat: Infinity, duration: 1.1, ease: 'easeOut' }}
+                  />
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {/* ── Textarea ────────────────────────────────────────────── */}
           <textarea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type your answer…"
+            placeholder={
+              isListening
+                ? 'Listening…'
+                : "Type your answer…"
+            }
             rows={1}
             disabled={currentStep === 'complete'}
-            className="flex-1 bg-transparent resize-none text-sm outline-none text-gray-900 dark:text-gray-100 placeholder:text-gray-400 max-h-28 scrollbar-hidden leading-relaxed py-1 disabled:opacity-50"
+            className={[
+              'flex-1 bg-transparent resize-none text-sm outline-none',
+              'placeholder:text-gray-400 max-h-28 scrollbar-hidden leading-relaxed py-1',
+              'disabled:opacity-50',
+              // During voice capture, text appears in a warmer tone to reinforce
+              // that it's being dictated (not manually typed)
+              isVoiceActive
+                ? 'text-red-700 dark:text-red-300'
+                : 'text-gray-900 dark:text-gray-100',
+            ].join(' ')}
             style={{ height: 'auto' }}
             onInput={(e) => {
-              // Auto-grow the textarea up to max-h-28 (112px)
               const el = e.currentTarget;
               el.style.height = 'auto';
               el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
             }}
           />
 
+          {/* ── Send button ─────────────────────────────────────────── */}
           <motion.button
             whileTap={{ scale: 0.85 }}
             onClick={handleSend}
@@ -523,11 +736,7 @@ export const ChatPanel: React.FC = () => {
           </motion.button>
         </div>
 
-        {/* ── DEV controls ─────────────────────────────────────────────────
-          These buttons let you manually advance the step machine or reset
-          the interview during development — useful for testing each step
-          without completing a full interview.  Hidden in production.
-        ─────────────────────────────────────────────────────────────────── */}
+        {/* ── DEV controls ─────────────────────────────────────────────── */}
         {import.meta.env.DEV && (
           <div className="mt-2 flex items-center justify-between px-1">
             <button
@@ -537,7 +746,7 @@ export const ChatPanel: React.FC = () => {
               [DEV] Next step →
             </button>
             <span className="text-[10px] text-gray-300 dark:text-gray-600 font-mono">
-              {INTERVIEW_STEP_LABELS[currentStep]}
+              {INTERVIEW_STEP_LABELS[currentStep]} · {mascotState}
             </span>
             <button
               onClick={resetInterview}
