@@ -661,6 +661,7 @@ export const DocumentPreview: React.FC = () => {
           <AnimatePresence>
             {currentAtsScore !== null && (
               <motion.div
+                key="ats-ring"
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.8 }}
@@ -697,7 +698,7 @@ export const DocumentPreview: React.FC = () => {
       {/* ── Skill Gap Checklist ────────────────────────────────────────────── */}
       <AnimatePresence>
         {skillGaps.length > 0 && hasContent && (
-          <SkillGapChecklist gaps={skillGaps} resumeData={resumeData} />
+          <SkillGapChecklist key="skill-gaps" gaps={skillGaps} resumeData={resumeData} />
         )}
       </AnimatePresence>
 
@@ -966,6 +967,7 @@ export const DocumentPreview: React.FC = () => {
       <AnimatePresence>
         {isComplete && !isUnlocked && (
           <motion.div
+            key="paywall"
             className="absolute inset-0 flex items-center justify-center z-20"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1005,6 +1007,7 @@ export const DocumentPreview: React.FC = () => {
       <AnimatePresence>
         {isComplete && isUnlocked && (
           <motion.div
+            key="export-bar"
             className="flex-shrink-0 px-4 py-3 border-t border-slate-700/60 space-y-2"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1049,7 +1052,7 @@ export const DocumentPreview: React.FC = () => {
 
       {/* ── Diff Overlay ──────────────────────────────────────────────────── */}
       <AnimatePresence>
-        {pendingDiff && <DiffView diff={pendingDiff} />}
+        {pendingDiff && <DiffView key="diff-view" diff={pendingDiff} />}
       </AnimatePresence>
 
       {/* ARIA live region */}
