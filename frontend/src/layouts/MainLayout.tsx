@@ -97,7 +97,7 @@ const useIsDesktop = (): boolean => {
  *   Center: Interview step progress dots
  *   Right:  Auth button / avatar (with sign-in modal + sign-out)
  */
-const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
+const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, onHome }) => {
   const user              = useAppStore((s) => s.user);
   const isPremium         = useAppStore((s) => s.isPremium);
   const isInterviewActive = useAppStore(selectIsInterviewActive);
@@ -105,6 +105,16 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
   const resumeLang        = useAppStore((s) => s.resumeLang);
   const setUserLang       = useAppStore((s) => s.setUserLang);
   const setResumeLang     = useAppStore((s) => s.setResumeLang);
+  const messages          = useAppStore((s) => s.messages);
+  const resetInterview    = useAppStore((s) => s.resetInterview);
+
+  const handleLogoClick = () => {
+    if (messages.length > 0) {
+      if (!window.confirm('Start a new session? Your current resume progress will be cleared.')) return;
+      resetInterview();
+    }
+    onHome?.();
+  };
 
   // ── Sign-in modal state ──────────────────────────────────────────────────
   const [showAuthModal,     setShowAuthModal]     = useState(false);
@@ -141,14 +151,18 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
 
   return (
     <>
-      <header className="flex-shrink-0 h-14 flex items-center justify-between px-4 lg:px-6 border-b border-gray-100 dark:border-gray-800 glass z-20">
+      <header className="flex-shrink-0 h-14 flex items-center justify-between px-4 lg:px-6 border-b border-gray-200 glass z-20">
 
         {/* ── Logo ─────────────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2.5">
+        <button
+          onClick={handleLogoClick}
+          className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
+          title="Back to home"
+        >
           <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-brand flex-shrink-0">
             <span className="text-white text-xs font-black tracking-tighter">J</span>
           </div>
-          <span className="text-base font-bold text-gray-900 dark:text-gray-100 tracking-tight">
+          <span className="text-base font-bold text-gray-900 tracking-tight">
             JobifAI
           </span>
           {isPremium && (
@@ -160,7 +174,7 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
               PRO
             </motion.span>
           )}
-        </div>
+        </button>
 
         {/* ── Step progress indicator ──────────────────────────────────── */}
         <AnimatePresence>
@@ -190,19 +204,19 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                     animate={{ opacity: 1, y: 0,  scale: 1    }}
                     exit={{    opacity: 0, y: -6, scale: 0.96 }}
                     transition={{ type: 'spring', stiffness: 400, damping: 28 }}
-                    className="absolute right-0 top-10 w-52 bg-slate-800 border border-slate-700/60 rounded-2xl shadow-xl shadow-black/30 overflow-hidden z-50"
+                    className="absolute right-0 top-10 w-52 bg-white border border-gray-200 rounded-2xl shadow-xl shadow-gray-200 overflow-hidden z-50"
                   >
                     {/* Header: email + plan badge */}
-                    <div className="px-4 py-3 border-b border-slate-700/50">
-                      <p className="text-xs text-slate-400 truncate">{user.email}</p>
+                    <div className="px-4 py-3 border-b border-gray-100">
+                      <p className="text-xs text-gray-500 truncate">{user.email}</p>
                       {isPremium ? (
-                        <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-brand-400">
+                        <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-brand-600">
                           <Zap className="w-2.5 h-2.5" />
                           Pro Active
                         </span>
                       ) : (
                         <button
-                          className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300 transition-colors"
+                          className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold uppercase tracking-widest text-amber-600 hover:text-amber-700 transition-colors"
                           onClick={() => setShowUserMenu(false)}
                         >
                           <Zap className="w-2.5 h-2.5" />
@@ -214,12 +228,12 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                     {/* My Resumes — coming soon */}
                     <button
                       disabled
-                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-500 cursor-not-allowed"
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-400 cursor-not-allowed"
                       title="Coming soon"
                     >
-                      <FileText className="w-4 h-4 text-slate-600" />
+                      <FileText className="w-4 h-4 text-gray-300" />
                       My Resumes
-                      <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-slate-600 bg-slate-700/50 rounded-full px-1.5 py-0.5">
+                      <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-gray-400 bg-gray-100 rounded-full px-1.5 py-0.5">
                         Soon
                       </span>
                     </button>
@@ -227,13 +241,13 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                     {/* Settings */}
                     <button
                       onClick={() => { setShowUserMenu(false); setShowSettingsModal(true); }}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-300 hover:text-white hover:bg-slate-700/50 transition-colors"
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-50 transition-colors"
                     >
-                      <Settings className="w-4 h-4 text-slate-400" />
+                      <Settings className="w-4 h-4 text-gray-400" />
                       Settings
                     </button>
 
-                    <div className="border-t border-slate-700/50" />
+                    <div className="border-t border-gray-100" />
 
                     {/* Sign out */}
                     <button
@@ -241,9 +255,9 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                         setShowUserMenu(false);
                         await auth.signOut();
                       }}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-300 hover:text-white hover:bg-slate-700/50 transition-colors"
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-50 transition-colors"
                     >
-                      <LogOut className="w-4 h-4 text-slate-400" />
+                      <LogOut className="w-4 h-4 text-gray-400" />
                       Sign out
                     </button>
                   </motion.div>
@@ -254,7 +268,7 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
             /* ── Signed-out: Sign in button ─────────────────────────── */
             <button
               onClick={() => setShowAuthModal(true)}
-              className="text-sm font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 transition-colors"
+              className="text-sm font-semibold text-brand-600 hover:text-brand-700 transition-colors"
             >
               Sign in
             </button>
@@ -318,8 +332,8 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                   <p className="text-xs text-slate-500">Mac will respond in this language.</p>
                   <select
                     value={userLang}
-                    onChange={(e) => setUserLang(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-brand-500/60 transition-colors"
+                    onChange={(e) => setUserLang(e.target.value as import('@/types').LanguageCode)}
+                    className="bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-brand-500/60 transition-colors"
                   >
                     <option value="en">English</option>
                     <option value="fr">Français</option>
@@ -344,8 +358,8 @@ const TopBar: React.FC<{ auth: AuthActions }> = ({ auth }) => {
                   <p className="text-xs text-slate-500">The language your resume will be written in.</p>
                   <select
                     value={resumeLang}
-                    onChange={(e) => setResumeLang(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-brand-500/60 transition-colors"
+                    onChange={(e) => setResumeLang(e.target.value as import('@/types').LanguageCode)}
+                    className="bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-brand-500/60 transition-colors"
                   >
                     <option value="en-CA">English (Canadian)</option>
                     <option value="en">English (US)</option>
@@ -546,7 +560,7 @@ const StepProgressBar: React.FC = () => {
             className={`h-1.5 rounded-full transition-colors ${
               isActive
                 ? 'bg-brand-500'
-                : 'bg-gray-200 dark:bg-gray-700'
+                : 'bg-gray-200'
             }`}
             // Animate between wide (active) and narrow (future) widths
             animate={{ width: isCurrent ? 24 : isActive ? 16 : 6 }}
@@ -578,7 +592,7 @@ const Scrim: React.FC<{ onDismiss: () => void }> = ({ onDismiss }) => (
 
 // ── Main Layout ───────────────────────────────────────────────────────────────
 
-export const MainLayout: React.FC<{ auth: AuthActions }> = ({ auth }) => {
+export const MainLayout: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, onHome }) => {
   const isDesktop = useIsDesktop();
 
   // Bottom Sheet open state — true when snap >= 1 (50%+ visible)
@@ -596,9 +610,9 @@ export const MainLayout: React.FC<{ auth: AuthActions }> = ({ auth }) => {
      * `overflow-hidden`: prevents the body from scrolling — each panel
      * manages its own internal scroll independently.
      */
-    <div className="h-dvh flex flex-col bg-bg dark:bg-bg-dark overflow-hidden">
+    <div className="h-dvh flex flex-col bg-slate-50 overflow-hidden">
 
-      <TopBar auth={auth} />
+      <TopBar auth={auth} onHome={onHome} />
 
       {isDesktop ? (
         // ── Desktop: Side-by-side split ──────────────────────────────────────
@@ -606,7 +620,7 @@ export const MainLayout: React.FC<{ auth: AuthActions }> = ({ auth }) => {
 
           {/* Left panel: Chat (40% width) */}
           <div
-            className="w-2/5 flex-shrink-0 flex flex-col min-h-0 overflow-hidden border-r border-gray-100 dark:border-gray-800"
+            className="w-2/5 flex-shrink-0 flex flex-col min-h-0 overflow-hidden border-r border-gray-200"
             aria-label="Chat with Mac"
           >
             <ChatPanel />

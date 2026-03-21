@@ -85,7 +85,7 @@ const App: React.FC = () => {
 
   return (
     // Outer container: full viewport, clip overflow so slides don't show outside
-    <div className="fixed inset-0 bg-slate-950 overflow-hidden">
+    <div className="fixed inset-0 bg-slate-50 overflow-hidden">
       <AnimatePresence mode="wait" custom={direction}>
         {screen === 'onboarding' && (
           <motion.div
@@ -117,7 +117,7 @@ const App: React.FC = () => {
              * The workspace renders underneath so the paywall modal floats
              * over a real (blurred) preview of the tool — adds desire.
              */}
-            <MainLayout auth={auth} />
+            <MainLayout auth={auth} onHome={() => goTo('onboarding')} />
             <PaywallModal onAccessGranted={() => goTo('workspace')} />
           </motion.div>
         )}
@@ -133,7 +133,7 @@ const App: React.FC = () => {
             transition={screenTransition}
             className="absolute inset-0"
           >
-            <MainLayout auth={auth} />
+            <MainLayout auth={auth} onHome={() => goTo('onboarding')} />
           </motion.div>
         )}
       </AnimatePresence>

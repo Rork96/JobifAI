@@ -47,6 +47,13 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import ReactMarkdown from 'react-markdown';
+
+// ── Module-level singleton ─────────────────────────────────────────────────────
+// Persists across React Strict Mode mount cycles AND across multiple ChatPanel
+// instances (paywall screen + workspace screen both render MainLayout).
+// Prevents double-greeting no matter which instance fires first.
+let _hasGreeted = false;
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, MicOff, Send } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
@@ -365,43 +372,42 @@ export const ChatPanel: React.FC = () => {
   }, [inputValue]);
 
   // ── Mac talks first — initial greeting ────────────────────────────────────
-  // When the user arrives at the workspace, the chat is empty and we want Mac
-  // to break the silence immediately rather than waiting for the user to type.
+  // Uses a module-level `_hasGreeted` flag (not useRef) so a single greeting
+  // fires across BOTH Strict Mode mount cycles AND across the two MainLayout
+  // instances that coexist during the paywall→workspace transition in App.tsx.
   //
-  // HOW: Fire a hidden "idle" turn to the backend and current_step: 'idle'.
-  // The system prompt's idle step instructs Mac to deliver its welcome greeting
-  // and set advance=true, which moves the state machine idle → target_title.
-  // No user bubble is added to history — we simply skip addMessage for the
-  // trigger message.
-  //
-  // STRICT MODE NOTE: React 18 Strict Mode intentionally mounts → unmounts →
-  // remounts every component.  We deliberately do NOT use a `hasGreetedRef`
-  // guard here: that would be set on the first (discarded) mount, then prevent
-  // the greeting on the real second mount.  Instead we rely solely on
-  // `messages.length > 0` — once Mac's response commits to the store the effect
-  // simply won't re-run.  The cleanup's clearTimeout safely cancels the timer
-  // between the two Strict Mode mounts so only one request ever goes out.
+  // Logic:
+  //   IF resumeData has content OR jobDescription/uploadedResumeText exist
+  //     → send ONE analysis prompt so Mac starts improving the resume immediately
+  //   ELSE
+  //     → send the default 'hi' to get the "What's the dream job?" greeting
   useEffect(() => {
-    // Skip if messages already exist (resume loaded from DB, or already greeted)
-    // or if somehow a generation is already in flight.
+    if (_hasGreeted) return;
     if (messages.length > 0) return;
+    _hasGreeted = true;
 
-    // 500 ms delay — lets the chat panel entrance animation finish so the
-    // thinking dots appear after the UI is settled (not during the fade-in).
     const timer = setTimeout(async () => {
+      // Double-check inside the timeout — messages may have arrived while waiting
+      if (useAppStore.getState().messages.length > 0) return;
+
       setIsGenerating(true);
       setStreamingContent('');
 
-      // Read fresh values at execution time to avoid stale closures.
-      const { userLang: lang, resumeLang: rLang, jobDescription: jd, uploadedResumeText: rawResume } =
-        useAppStore.getState();
+      const {
+        userLang: lang,
+        resumeLang: rLang,
+        jobDescription: jd,
+        uploadedResumeText: rawResume,
+        resumeData: rd,
+      } = useAppStore.getState();
       const byokKey = localStorage.getItem(BYOK_STORAGE_KEY) ?? undefined;
 
-      // If the user uploaded a resume, include it so Mac can immediately analyze
-      // gaps and skip asking for info that's already in the document.
-      const hasUploadedContext = !!(rawResume?.trim());
-      const greetingMessage = hasUploadedContext
-        ? `I've uploaded my resume${jd ? ' and a target job description' : ''}. Please analyze the key gaps and tell me what to improve first. Resume text:\n${rawResume!.slice(0, 3000)}`
+      // Decide greeting based on whether any context already exists
+      const hasResumeData = rd && Object.values(rd).some((v) => v !== null && v !== undefined && v !== '');
+      const hasContext    = !!(hasResumeData || jd?.trim() || rawResume?.trim());
+
+      const greetingMessage = hasContext
+        ? `I've uploaded my resume${jd ? ' and a target job description' : ''}. Please analyze the key gaps and tell me what to improve first.${rawResume ? `\n\nResume text:\n${rawResume.slice(0, 3000)}` : ''}`
         : 'hi';
 
       let accumulated = '';
@@ -418,7 +424,7 @@ export const ChatPanel: React.FC = () => {
             user_lang:            lang,
             resume_lang:          rLang,
             conversation_history: [],
-            resume_data_context:  {},
+            resume_data_context:  rd ?? {},
             ...(byokKey ? { byok_api_key: byokKey } : {}),
             ...(jd      ? { job_description: jd }   : {}),
           }),
@@ -426,7 +432,6 @@ export const ChatPanel: React.FC = () => {
 
         if (!res.ok || !res.body) { cleanup(); return; }
 
-        // Reuse the same SSE parsing logic as handleSend.
         const reader  = res.body.getReader();
         const decoder = new TextDecoder();
         let   buffer  = '';
@@ -451,11 +456,9 @@ export const ChatPanel: React.FC = () => {
               accumulated += (payload.text as string) ?? '';
               setStreamingContent(accumulated);
             } else if (eventType === 'data_extract') {
-              // If Mac's idle greeting signals advance=true, move to target_title
               const extracted = payload as unknown as DataExtractPayload;
               if (extracted.advance === true) advanceStep();
             } else if (eventType === 'done') {
-              // Commit Mac's greeting as the first message in history
               if (accumulated.trim()) addMessage({ role: 'assistant', content: accumulated.trim() });
               cleanup();
             } else if (eventType === 'error') {
@@ -464,14 +467,13 @@ export const ChatPanel: React.FC = () => {
           }
         }
       } catch {
-        // Network error on greeting — fail silently; user can still type manually
         cleanup();
       }
     }, 500);
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Intentionally empty — fire exactly once on mount
+  }, []); // Intentionally empty — fire exactly once per page load
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -758,10 +760,10 @@ export const ChatPanel: React.FC = () => {
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full min-h-0 bg-white dark:bg-surface-dark">
+    <div className="flex flex-col h-full min-h-0 bg-white">
 
       {/* ── Header: Mascot + step prompt ────────────────────────────────── */}
-      <div className="flex-shrink-0 px-5 pt-6 pb-4 border-b border-gray-100 dark:border-gray-800">
+      <div className="flex-shrink-0 px-5 pt-6 pb-4 border-b border-gray-100">
         <div className="flex flex-col items-center gap-3">
 
           {/* MacMascot receives the full state for emotional synchronisation */}
@@ -774,7 +776,7 @@ export const ChatPanel: React.FC = () => {
           <AnimatePresence mode="wait">
             <motion.p
               key={currentStep}
-              className="text-sm text-center text-gray-500 dark:text-gray-400 max-w-xs leading-relaxed"
+              className="text-sm text-center text-gray-500 max-w-xs leading-relaxed"
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{   opacity: 0, y: -6 }}
@@ -785,7 +787,7 @@ export const ChatPanel: React.FC = () => {
           </AnimatePresence>
 
           {/* Language indicator */}
-          <div className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
+          <div className="flex items-center gap-1.5 text-xs text-gray-400">
             <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
             <span>
               Chatting in{' '}
@@ -882,9 +884,11 @@ export const ChatPanel: React.FC = () => {
                   'px-4 py-2.5 text-sm leading-relaxed',
                   msg.role === 'user'
                     ? 'bg-brand-600 text-white rounded-2xl rounded-br-md ml-auto'
-                    : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md',
+                    : 'bg-gray-100 text-gray-900 rounded-2xl rounded-bl-md',
                 ].join(' ')}>
-                  {msg.content}
+                  {msg.role === 'assistant'
+                    ? <ReactMarkdown className="prose prose-sm prose-slate max-w-none">{msg.content}</ReactMarkdown>
+                    : msg.content}
                 </div>
                 <span className={`text-[10px] text-gray-400 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
                   {formatRelativeTime(msg.timestamp)}
@@ -909,11 +913,11 @@ export const ChatPanel: React.FC = () => {
               <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center">
                 <span className="text-xs">🐾</span>
               </div>
-              <div className="bg-gray-100 dark:bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1 items-center">
+              <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1 items-center">
                 {[0, 1, 2].map((i) => (
                   <motion.span
                     key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-500 inline-block"
+                    className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block"
                     animate={{ y: [0, -4, 0] }}
                     transition={{ repeat: Infinity, duration: 0.7, delay: i * 0.15 }}
                   />
@@ -939,8 +943,8 @@ export const ChatPanel: React.FC = () => {
               <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center mt-1">
                 <span className="text-xs">🐾</span>
               </div>
-              <div className="max-w-[78%] bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed">
-                {streamingContent}
+              <div className="max-w-[78%] bg-gray-100 text-gray-900 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed">
+                <ReactMarkdown className="prose prose-sm prose-slate max-w-none inline">{streamingContent}</ReactMarkdown>
                 {/* Blinking text cursor — signals the stream is still open */}
                 <motion.span
                   className="inline-block w-0.5 h-4 bg-brand-400 ml-0.5 align-middle"

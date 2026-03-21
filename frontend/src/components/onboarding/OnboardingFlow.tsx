@@ -146,7 +146,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   useEffect(() => {
     if (step !== 3 || onboardingMode !== 'upload') return;
 
-    const resumeText = storeResumeText || resumeText;
+    const resumeText = storeResumeText;
     if (!resumeText) return;   // no resume → skip real scoring
 
     setIsScoringApi(true);
@@ -706,7 +706,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       </div>
 
                       <button
-                        onClick={() => { setShowScratchSubForm(false); setOnboardingMode(null); }}
+                        onClick={() => { setShowScratchSubForm(false); setOnboardingMode('scratch'); }}
                         className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center"
                       >
                         ← Go back

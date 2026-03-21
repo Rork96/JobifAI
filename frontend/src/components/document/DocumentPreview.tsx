@@ -191,7 +191,7 @@ const SkillGapChecklist: React.FC<{
 
   return (
     <motion.div
-      className="flex-shrink-0 border-b border-slate-700/60 bg-slate-900"
+      className="flex-shrink-0 border-b border-gray-200 bg-white"
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: 'spring', stiffness: 300, damping: 26 }}
@@ -199,20 +199,20 @@ const SkillGapChecklist: React.FC<{
       {/* Header row */}
       <button
         onClick={() => setIsOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-800/40 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <Zap className="w-3.5 h-3.5 text-orange-400" />
-          <span className="text-xs font-semibold text-slate-200">
+          <Zap className="w-3.5 h-3.5 text-orange-500" />
+          <span className="text-xs font-semibold text-gray-800">
             ATS Gaps
           </span>
-          <span className="text-[10px] font-medium text-slate-500">
+          <span className="text-[10px] font-medium text-gray-500">
             {progress}/{total} resolved
           </span>
         </div>
         <div className="flex items-center gap-2">
           {/* Mini progress bar */}
-          <div className="w-16 h-1 bg-slate-700 rounded-full overflow-hidden">
+          <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
             <motion.div
               className="h-full bg-gradient-to-r from-orange-500 to-emerald-400 rounded-full"
               animate={{ width: `${(progress / total) * 100}%` }}
@@ -220,7 +220,7 @@ const SkillGapChecklist: React.FC<{
             />
           </div>
           <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+            <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
           </motion.div>
         </div>
       </button>
@@ -244,14 +244,14 @@ const SkillGapChecklist: React.FC<{
                     initAudioContext();
                     dispatchInsertSkill(gap);
                   }}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-orange-300 bg-orange-500/10 border border-orange-500/25 hover:bg-orange-500/20 hover:border-orange-400/50 rounded-full px-2.5 py-1 transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 text-[11px] font-medium text-orange-700 bg-orange-50 border border-orange-300 hover:bg-orange-100 hover:border-orange-400 rounded-full px-2.5 py-1 transition-colors cursor-pointer"
                   whileHover={{ scale: 1.04 }}
                   whileTap={{ scale: 0.96 }}
                   title={`Click to insert "${gap}" into chat`}
                 >
-                  <span className="w-3 h-3 rounded border border-orange-400/40 flex-shrink-0" />
+                  <span className="w-3 h-3 rounded border border-orange-400 flex-shrink-0" />
                   {gap}
-                  <span className="text-orange-400/70 font-semibold">+{getGapValue(gap)}%</span>
+                  <span className="text-orange-500 font-semibold">+{getGapValue(gap)}%</span>
                 </motion.button>
               ))}
 
@@ -259,7 +259,7 @@ const SkillGapChecklist: React.FC<{
               {completedGaps.map((gap) => (
                 <motion.div
                   key={gap}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-400/70 bg-emerald-500/8 border border-emerald-500/20 rounded-full px-2.5 py-1"
+                  className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700/70 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1"
                   initial={{ scale: 1.2 }}
                   animate={{ scale: 1 }}
                   transition={{ type: 'spring', stiffness: 500, damping: 20 }}
@@ -269,7 +269,7 @@ const SkillGapChecklist: React.FC<{
                     animate={{ scale: 1 }}
                     transition={{ type: 'spring', stiffness: 600, damping: 18 }}
                   >
-                    <Check className="w-3 h-3 text-emerald-400" />
+                    <Check className="w-3 h-3 text-emerald-600" />
                   </motion.div>
                   <span className="line-through opacity-60">{gap}</span>
                 </motion.div>
@@ -350,7 +350,7 @@ const HoverableBullet: React.FC<HoverableBulletProps> = ({
               if (e.key === 'Escape') setIsEditing(false);
             }}
             rows={2}
-            className="w-full text-sm text-slate-200 bg-slate-700/60 border border-brand-500/40 rounded-lg px-2.5 py-1.5 resize-none outline-none focus:border-brand-400/60 transition-colors"
+            className="w-full text-sm text-gray-800 bg-gray-50 border border-brand-400/40 rounded-lg px-2.5 py-1.5 resize-none outline-none focus:border-brand-500/60 transition-colors"
           />
           <div className="flex gap-1.5">
             <button
@@ -361,7 +361,7 @@ const HoverableBullet: React.FC<HoverableBulletProps> = ({
             </button>
             <button
               onClick={() => setIsEditing(false)}
-              className="text-[11px] font-medium text-slate-400 hover:text-slate-200 rounded-md px-2 py-1 transition-colors"
+              className="text-[11px] font-medium text-gray-500 hover:text-gray-700 rounded-md px-2 py-1 transition-colors"
             >
               Cancel
             </button>
@@ -378,13 +378,13 @@ const HoverableBullet: React.FC<HoverableBulletProps> = ({
       onMouseLeave={() => setHovered(false)}
     >
       <span className="text-orange-500/70 flex-shrink-0 mt-0.5 select-none">›</span>
-      <span className="text-sm text-slate-300 flex-1 leading-relaxed">{text}</span>
+      <span className="text-sm text-gray-700 flex-1 leading-relaxed">{text}</span>
 
       {/* Hover action buttons */}
       <AnimatePresence>
         {hovered && (
           <motion.div
-            className="absolute right-0 top-0 flex items-center gap-1 bg-slate-800 border border-slate-600/50 rounded-lg px-1.5 py-1 shadow-lg z-10"
+            className="absolute right-0 top-0 flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-1.5 py-1 shadow-md z-10"
             initial={{ opacity: 0, scale: 0.85, x: 4 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
             exit={{ opacity: 0, scale: 0.85, x: 4 }}
@@ -393,20 +393,20 @@ const HoverableBullet: React.FC<HoverableBulletProps> = ({
             {/* Edit button */}
             <button
               onClick={() => { setIsEditing(true); setEditValue(text); }}
-              className="flex items-center gap-1 text-[10px] font-medium text-slate-300 hover:text-white hover:bg-slate-700 rounded-md px-1.5 py-0.5 transition-colors"
+              className="flex items-center gap-1 text-[10px] font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md px-1.5 py-0.5 transition-colors"
               title="Edit this bullet"
             >
               <Edit3 className="w-2.5 h-2.5" />
               Edit
             </button>
 
-            <div className="w-px h-3 bg-slate-600" />
+            <div className="w-px h-3 bg-gray-200" />
 
             {/* Magic button */}
             <button
               onClick={handleMagicClick}
               disabled={isMagicking}
-              className="flex items-center gap-1 text-[10px] font-medium text-orange-300 hover:text-orange-200 hover:bg-orange-500/10 rounded-md px-1.5 py-0.5 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1 text-[10px] font-medium text-orange-600 hover:text-orange-700 hover:bg-orange-50 rounded-md px-1.5 py-0.5 transition-colors disabled:opacity-50"
               title="AI Magic Rewrite"
             >
               {isMagicking ? (
@@ -557,6 +557,14 @@ export const DocumentPreview: React.FC = () => {
   // ── PDF Generation ───────────────────────────────────────────────────────
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError,        setPdfError]        = useState('');
+  const [premiumToast,    setPremiumToast]    = useState('');
+
+  // Auto-dismiss the premium "coming soon" toast after 3 s
+  useEffect(() => {
+    if (!premiumToast) return;
+    const t = setTimeout(() => setPremiumToast(''), 3000);
+    return () => clearTimeout(t);
+  }, [premiumToast]);
 
   const handleDownloadPdf = async () => {
     if (isGeneratingPdf) return;
@@ -647,13 +655,13 @@ export const DocumentPreview: React.FC = () => {
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="relative h-full flex flex-col bg-slate-900">
+    <div className="relative h-full flex flex-col bg-slate-100">
 
       {/* ── Panel header ─────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-slate-700/60">
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-white">
         <div className="flex items-center gap-2">
-          <FileText className="w-4 h-4 text-orange-400" />
-          <h2 className="text-sm font-semibold text-slate-200">Resume Preview</h2>
+          <FileText className="w-4 h-4 text-orange-500" />
+          <h2 className="text-sm font-semibold text-gray-800">Resume Preview</h2>
         </div>
 
         <div className="flex items-center gap-3">
@@ -676,7 +684,7 @@ export const DocumentPreview: React.FC = () => {
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2.5 py-0.5"
+              className="flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-0.5"
             >
               <CheckCircle2 className="w-3 h-3" />
               Complete
@@ -686,7 +694,7 @@ export const DocumentPreview: React.FC = () => {
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 border border-orange-500/20 rounded-full px-2.5 py-0.5"
+              className="flex items-center gap-1 text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-full px-2.5 py-0.5"
             >
               <Lock className="w-3 h-3" />
               Export locked
@@ -707,22 +715,22 @@ export const DocumentPreview: React.FC = () => {
 
         {!hasContent ? (
           uploadedResumeText?.trim() ? (
-            <div className="p-4 pb-8">
+            <div className="py-8 px-4">
               <motion.div
-                className="bg-slate-800 rounded-2xl border border-slate-700/50 shadow-2xl overflow-hidden"
+                className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[794px] w-full overflow-hidden"
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ type: 'spring', stiffness: 260, damping: 22 }}
               >
                 <div className="h-1 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-400" />
-                <div className="p-6">
+                <div className="p-8">
                   <div className="flex items-center gap-2 mb-3">
-                    <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
-                    <span className="text-xs font-semibold text-orange-400 uppercase tracking-wide">
+                    <Loader2 className="w-3.5 h-3.5 text-orange-500 animate-spin" />
+                    <span className="text-xs font-semibold text-orange-600 uppercase tracking-wide">
                       Mac is analyzing your resume…
                     </span>
                   </div>
-                  <pre className="text-xs text-slate-400 whitespace-pre-wrap break-words leading-relaxed font-mono max-h-[60vh] overflow-y-auto scrollbar-hidden">
+                  <pre className="text-xs text-gray-500 whitespace-pre-wrap break-words leading-relaxed font-mono max-h-[60vh] overflow-y-auto scrollbar-hidden">
                     {uploadedResumeText.slice(0, 4000)}
                     {uploadedResumeText.length > 4000 && '\n\n[…truncated for preview]'}
                   </pre>
@@ -735,7 +743,7 @@ export const DocumentPreview: React.FC = () => {
                 {[100, 55, 75, 42, 68, 50].map((w, i) => (
                   <motion.div
                     key={i}
-                    className="h-2.5 rounded-full bg-slate-700/80"
+                    className="h-2.5 rounded-full bg-gray-200"
                     style={{ width: `${w}%` }}
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: [0.4, 0.7, 0.4] }}
@@ -747,22 +755,23 @@ export const DocumentPreview: React.FC = () => {
                 ))}
               </div>
               <div className="mt-2">
-                <p className="text-sm font-medium text-slate-400">Your resume appears here as you chat</p>
-                <p className="text-xs text-slate-600 mt-1">Answer Mac's questions to fill it in →</p>
+                <p className="text-sm font-medium text-gray-500">Your resume appears here as you chat</p>
+                <p className="text-xs text-gray-400 mt-1">Answer Mac's questions to fill it in →</p>
               </div>
             </div>
           )
         ) : (
-          <div className="p-4 pb-8">
+          <div className="py-8 px-4 pb-12">
+            {/* ── A4 Paper Sheet ─────────────────────────────────────────── */}
             <motion.div
-              className="bg-slate-800 rounded-2xl border border-slate-700/50 shadow-2xl overflow-hidden"
+              className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[794px] w-full overflow-hidden"
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: 'spring', stiffness: 260, damping: 22 }}
             >
               <div className="h-1 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-400" />
 
-              <div className="p-6 space-y-6">
+              <div className="p-8 space-y-6">
                 <motion.div
                   className="space-y-6"
                   initial="hidden"
@@ -773,7 +782,7 @@ export const DocumentPreview: React.FC = () => {
                   {/* ── Target Title ──────────────────────────────────── */}
                   {resumeData.targetTitle && (
                     <motion.div variants={sectionVariants}>
-                      <h1 className="text-xl font-bold text-slate-100 tracking-tight leading-tight">
+                      <h1 className="text-2xl font-bold text-gray-900 tracking-tight leading-tight">
                         {resumeData.targetTitle}
                       </h1>
                       <div className="mt-2 h-0.5 w-12 bg-gradient-to-r from-orange-500 to-amber-400 rounded-full" />
@@ -785,7 +794,7 @@ export const DocumentPreview: React.FC = () => {
                     <motion.section variants={sectionVariants} className="group/section">
                       <SectionHeading>Professional Summary</SectionHeading>
                       <div className="relative">
-                        <p className="text-sm text-slate-300 leading-relaxed">
+                        <p className="text-sm text-gray-700 leading-relaxed">
                           {resumeData.summary}
                         </p>
                         {/* Magic button for summary */}
@@ -823,14 +832,14 @@ export const DocumentPreview: React.FC = () => {
                                 x: { duration: 0.3 },
                                 boxShadow: { duration: 1.4, ease: 'easeOut' },
                               }}
-                              className="border-l-2 border-orange-500/40 pl-4 rounded-r-lg"
+                              className="border-l-2 border-orange-400 pl-4 rounded-r-lg"
                             >
                               <div className="flex items-start justify-between gap-4">
                                 <div>
-                                  <p className="text-sm font-semibold text-slate-100">{exp.title}</p>
-                                  <p className="text-xs font-medium text-orange-400 mt-0.5">{exp.company}</p>
+                                  <p className="text-sm font-semibold text-gray-900">{exp.title}</p>
+                                  <p className="text-xs font-medium text-orange-600 mt-0.5">{exp.company}</p>
                                 </div>
-                                <p className="text-xs text-slate-500 whitespace-nowrap flex-shrink-0 font-mono">
+                                <p className="text-xs text-gray-500 whitespace-nowrap flex-shrink-0 font-mono">
                                   {exp.startDate} – {exp.endDate ?? 'Present'}
                                 </p>
                               </div>
@@ -857,7 +866,7 @@ export const DocumentPreview: React.FC = () => {
                                   {exp.metrics.map((m, i) => (
                                     <span
                                       key={i}
-                                      className="text-xs bg-emerald-500/12 text-emerald-300 border border-emerald-500/20 rounded-full px-2.5 py-0.5 font-medium"
+                                      className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-2.5 py-0.5 font-medium"
                                     >
                                       📈 {m}
                                     </span>
@@ -895,7 +904,7 @@ export const DocumentPreview: React.FC = () => {
                                 scale: { type: 'spring', stiffness: 380, damping: 22 },
                                 boxShadow: { duration: 1.4, ease: 'easeOut' },
                               }}
-                              className="text-xs bg-orange-500/12 text-orange-300 border border-orange-500/20 rounded-full px-3 py-1 font-medium"
+                              className="text-xs bg-orange-50 text-orange-700 border border-orange-200 rounded-full px-3 py-1 font-medium"
                             >
                               {skill}
                             </motion.span>
@@ -924,17 +933,17 @@ export const DocumentPreview: React.FC = () => {
                               className="flex items-start justify-between gap-4 rounded-lg"
                             >
                               <div>
-                                <p className="text-sm font-semibold text-slate-100">
+                                <p className="text-sm font-semibold text-gray-900">
                                   {edu.degree} in {edu.field}
                                 </p>
-                                <p className="text-xs text-slate-400 mt-0.5">
+                                <p className="text-xs text-gray-600 mt-0.5">
                                   {edu.institution}
                                   {edu.honours && (
-                                    <span className="text-orange-400/80">{' · '}{edu.honours}</span>
+                                    <span className="text-orange-600/80">{' · '}{edu.honours}</span>
                                   )}
                                 </p>
                               </div>
-                              <p className="text-xs text-slate-500 flex-shrink-0 font-mono">
+                              <p className="text-xs text-gray-500 flex-shrink-0 font-mono">
                                 {edu.graduationYear}
                               </p>
                             </motion.div>
@@ -948,9 +957,9 @@ export const DocumentPreview: React.FC = () => {
                   {hasContent && (
                     <motion.div
                       variants={sectionVariants}
-                      className="pt-4 border-t border-dashed border-slate-700"
+                      className="pt-4 border-t border-dashed border-gray-200"
                     >
-                      <p className="text-[10px] text-slate-600 text-center">
+                      <p className="text-[10px] text-gray-400 text-center">
                         ✓ Canadian HR standards · Reverse chronological · No discriminatory fields
                       </p>
                     </motion.div>
@@ -1008,7 +1017,7 @@ export const DocumentPreview: React.FC = () => {
         {isComplete && isUnlocked && (
           <motion.div
             key="export-bar"
-            className="flex-shrink-0 px-4 py-3 border-t border-slate-700/60 space-y-2"
+            className="flex-shrink-0 px-4 py-3 border-t border-gray-200 bg-white space-y-2"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
@@ -1021,7 +1030,7 @@ export const DocumentPreview: React.FC = () => {
                 'flex items-center justify-center gap-2 text-sm',
                 'shadow-lg shadow-orange-500/25',
                 isGeneratingPdf
-                  ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                   : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white hover:shadow-orange-500/40 active:scale-[0.98]',
               ].join(' ')}
             >
@@ -1031,21 +1040,53 @@ export const DocumentPreview: React.FC = () => {
                 <><Download className="w-4 h-4" />Download ATS-Optimised PDF</>
               )}
             </button>
+
+            {/* ── Premium teaser buttons ─────────────────────────────── */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPremiumToast('Generate Cover Letter is coming soon for Premium subscribers!')}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-orange-600 border border-orange-300 rounded-xl py-2 hover:bg-orange-50 transition-colors"
+              >
+                Cover Letter 🪄
+              </button>
+              <button
+                onClick={() => setPremiumToast('Interview Prep is coming soon for Premium subscribers!')}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-slate-600 border border-gray-300 rounded-xl py-2 hover:bg-gray-50 transition-colors"
+              >
+                Interview Prep
+              </button>
+            </div>
+
             <AnimatePresence>
               {pdfError && (
                 <motion.p
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  className="text-xs text-red-400 text-center"
+                  className="text-xs text-red-500 text-center"
                 >
                   {pdfError}
                 </motion.p>
               )}
             </AnimatePresence>
-            <p className="text-[10px] text-slate-600 text-center">
+            <p className="text-[10px] text-gray-400 text-center">
               Helvetica · 1-inch margins · ATS text layer · Canadian HR standards
             </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Premium "Coming Soon" Toast ───────────────────────────────────── */}
+      <AnimatePresence>
+        {premiumToast && (
+          <motion.div
+            key="premium-toast"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            className="absolute bottom-20 left-1/2 -translate-x-1/2 z-40 bg-gray-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg whitespace-nowrap"
+          >
+            {premiumToast}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1067,10 +1108,10 @@ export const DocumentPreview: React.FC = () => {
 
 const SectionHeading: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className="flex items-center gap-3 mb-3">
-    <h3 className="text-[9px] font-bold uppercase tracking-[0.18em] text-orange-400 whitespace-nowrap">
+    <h3 className="text-[9px] font-bold uppercase tracking-[0.18em] text-orange-600 whitespace-nowrap">
       {children}
     </h3>
-    <div className="flex-1 h-px bg-slate-700/70" />
+    <div className="flex-1 h-px bg-gray-200" />
   </div>
 );
 

@@ -10,6 +10,7 @@
  */
 
 import type { Config } from 'tailwindcss';
+import typography from '@tailwindcss/typography';
 
 export default {
   // Scan these files for Tailwind class names (tree-shakes unused CSS in prod)
@@ -109,5 +110,5 @@ export default {
     },
   },
 
-  plugins: [],
+  plugins: [typography],
 } satisfies Config;
