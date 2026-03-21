@@ -254,7 +254,9 @@ export const ChatPanel: React.FC = () => {
   const resumeLang       = useAppStore((s) => s.resumeLang);
   const resumeData       = useAppStore((s) => s.resumeData);
   // Job description from onboarding — Mac uses this to tailor interview questions.
-  const jobDescription   = useAppStore((s) => s.jobDescription);
+  const jobDescription        = useAppStore((s) => s.jobDescription);
+  // Uploaded resume text — also used to detect when context is ready to fire greeting.
+  const uploadedResumeText    = useAppStore((s) => s.uploadedResumeText);
 
   // Actions — Zustand guarantees stable references; safe in dependency arrays.
   const addMessage       = useAppStore((s) => s.addMessage);
@@ -389,11 +391,15 @@ export const ChatPanel: React.FC = () => {
   useEffect(() => {
     if (hasGreetedRef.current) return;
     if (messages.length > 0) return;
-    hasGreetedRef.current = true;
 
     const timer = setTimeout(async () => {
-      // Double-check inside the timeout — messages may have arrived while waiting
+      // Guard against React 18 Strict Mode double-invocation:
+      // hasGreetedRef is set INSIDE the timeout so the cleanup clearTimeout()
+      // from the first invocation cancels it before this flag is ever set.
+      // The second mount re-schedules and this runs exactly once.
+      if (hasGreetedRef.current) return;
       if (useAppStore.getState().messages.length > 0) return;
+      hasGreetedRef.current = true;
 
       setIsGenerating(true);
       setStreamingContent('');
@@ -503,7 +509,7 @@ export const ChatPanel: React.FC = () => {
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Intentionally empty — fire exactly once per page load
+  }, [jobDescription, uploadedResumeText]); // Re-evaluate when context arrives from onboarding
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {

@@ -101,8 +101,9 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
   // ── Upload loading + result state ─────────────────────────────────────────
   // Separate loading flags so Mac shows processing for both independently.
-  const [isParsingFile, setIsParsingFile] = useState(false);
-  const [isParsingJob,  setIsParsingJob]  = useState(false);
+  const [isParsingFile,    setIsParsingFile]    = useState(false);
+  const [isParsingJob,     setIsParsingJob]     = useState(false);
+  const [isScratchFetching, setIsScratchFetching] = useState(false);
   const [fileError,     setFileError]     = useState('');
   const [jobError,      setJobError]      = useState('');
   const [uploadedFilename, setUploadedFilename] = useState('');
@@ -132,6 +133,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const setJobDescription     = useAppStore((s) => s.setJobDescription);
   const setRealAtsScore       = useAppStore((s) => s.setRealAtsScore);
   const setSkillGaps          = useAppStore((s) => s.setSkillGaps);
+  const setMatchedSkills      = useAppStore((s) => s.setMatchedSkills);
+  const setMissingSkills      = useAppStore((s) => s.setMissingSkills);
   const onboardingMode        = useAppStore((s) => s.onboardingMode);
   const storeResumeText       = useAppStore((s) => s.uploadedResumeText);
   const storeJobDescription   = useAppStore((s) => s.jobDescription);
@@ -162,10 +165,15 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
       .then((data) => {
         const score: number = typeof data.score === 'number' ? data.score : 28;
         const gaps: string[] = Array.isArray(data.skill_gaps) ? data.skill_gaps : [];
+        const matched: string[] = Array.isArray(data.matched_skills) ? data.matched_skills : [];
+        const missing: Array<{ skill: string; impact_percentage: number }> =
+          Array.isArray(data.missing_skills) ? data.missing_skills : [];
         setApiScore(score);
         setApiGaps(gaps);
         setRealAtsScore(score);
         setSkillGaps(gaps);
+        setMatchedSkills(matched);
+        setMissingSkills(missing);
       })
       .catch(() => {
         // Fallback score on network/API failure — keeps the flow unblocked
@@ -259,11 +267,34 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   }, [setOnboardingMode]);
 
   // Called when user submits the scratch sub-form.
-  // Skip the ATS scan step entirely for scratch mode — jump straight to workspace.
-  const handleScratchSubmit = useCallback(() => {
-    if (scratchJobInput.trim()) {
-      setJobDescription(scratchJobInput.trim());
+  // If the input is a URL that hasn't been fetched, fetch it first so the store
+  // receives actual JD text (not a raw URL) before the workspace mounts.
+  const handleScratchSubmit = useCallback(async () => {
+    const raw = scratchJobInput.trim();
+    if (!raw) return;
+
+    if (looksLikeUrl(raw)) {
+      // Auto-fetch the URL so the store gets real JD text, not a URL string.
+      setIsScratchFetching(true);
+      try {
+        const res  = await fetch('/api/parse-job', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ url: raw }),
+        });
+        const data = await res.json();
+        const jdText = data.success && data.text ? data.text : raw;
+        setJobDescription(jdText);
+      } catch {
+        // On any error fall back to storing the raw input (URL or text)
+        setJobDescription(raw);
+      } finally {
+        setIsScratchFetching(false);
+      }
+    } else {
+      setJobDescription(raw);
     }
+
     setShowScratchSubForm(false);
     onComplete();  // Skip ATS scoring — makes no sense without an existing resume
   }, [scratchJobInput, setJobDescription, onComplete]);
@@ -705,11 +736,11 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
                       <button
                         onClick={handleScratchSubmit}
-                        disabled={!scratchJobInput.trim()}
+                        disabled={!scratchJobInput.trim() || isScratchFetching}
                         className="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
                       >
                         <Sparkles className="w-3.5 h-3.5" />
-                        Start building →
+                        {isScratchFetching ? 'Fetching job description…' : 'Start building →'}
                       </button>
 
                       <button

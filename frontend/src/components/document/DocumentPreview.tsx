@@ -157,11 +157,16 @@ function dispatchInsertSkill(gap: string) {
 }
 
 const SkillGapChecklist: React.FC<{
-  gaps:         string[];
-  resumeData:   Partial<ResumeData>;
-}> = ({ gaps, resumeData }) => {
+  gaps:          string[];
+  missingSkills: Array<{ skill: string; impact_percentage: number }>;
+  matchedSkills: string[];
+  resumeData:    Partial<ResumeData>;
+}> = ({ gaps, missingSkills, matchedSkills, resumeData }) => {
   const [isOpen, setIsOpen] = useState(true);
   const prevSatisfied = useRef<Set<string>>(new Set());
+
+  // Build a lookup map: skill → impact_percentage (from real backend data)
+  const impactMap = new Map(missingSkills.map((s) => [s.skill.toLowerCase(), s.impact_percentage]));
 
   // Detect which gaps are already covered in the resume
   const resumeText = JSON.stringify(resumeData).toLowerCase();
@@ -182,7 +187,7 @@ const SkillGapChecklist: React.FC<{
     prevSatisfied.current = satisfiedGaps;
   });   // runs after every render — intentional (checks newly satisfied gaps)
 
-  if (gaps.length === 0) return null;
+  if (gaps.length === 0 && matchedSkills.length === 0) return null;
 
   const pendingGaps    = gaps.filter((g) => !satisfiedGaps.has(g));
   const completedGaps  = gaps.filter((g) =>  satisfiedGaps.has(g));
@@ -235,45 +240,73 @@ const SkillGapChecklist: React.FC<{
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="px-4 pb-3 flex flex-wrap gap-1.5">
-              {/* Pending gaps — clickable */}
-              {pendingGaps.map((gap) => (
-                <motion.button
-                  key={gap}
-                  onClick={() => {
-                    initAudioContext();
-                    dispatchInsertSkill(gap);
-                  }}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-orange-700 bg-orange-50 border border-orange-300 hover:bg-orange-100 hover:border-orange-400 rounded-full px-2.5 py-1 transition-colors cursor-pointer"
-                  whileHover={{ scale: 1.04 }}
-                  whileTap={{ scale: 0.96 }}
-                  title={`Click to insert "${gap}" into chat`}
-                >
-                  <span className="w-3 h-3 rounded border border-orange-400 flex-shrink-0" />
-                  {gap}
-                  <span className="text-orange-500 font-semibold">+{getGapValue(gap)}%</span>
-                </motion.button>
-              ))}
+            <div className="px-4 pb-3 space-y-2">
+              {/* Missing / pending gaps — clickable chips */}
+              {pendingGaps.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {pendingGaps.map((gap) => (
+                    <motion.button
+                      key={gap}
+                      onClick={() => {
+                        initAudioContext();
+                        dispatchInsertSkill(gap);
+                      }}
+                      className="flex items-center gap-1.5 text-[11px] font-medium text-orange-700 bg-orange-50 border border-orange-300 hover:bg-orange-100 hover:border-orange-400 rounded-full px-2.5 py-1 transition-colors cursor-pointer"
+                      whileHover={{ scale: 1.04 }}
+                      whileTap={{ scale: 0.96 }}
+                      title={`Click to insert "${gap}" into chat`}
+                    >
+                      <span className="w-3 h-3 rounded border border-orange-400 flex-shrink-0" />
+                      {gap}
+                      <span className="text-orange-500 font-semibold">+{impactMap.get(gap.toLowerCase()) ?? getGapValue(gap)}%</span>
+                    </motion.button>
+                  ))}
+                </div>
+              )}
 
-              {/* Satisfied gaps — checked off */}
-              {completedGaps.map((gap) => (
-                <motion.div
-                  key={gap}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700/70 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1"
-                  initial={{ scale: 1.2 }}
-                  animate={{ scale: 1 }}
-                  transition={{ type: 'spring', stiffness: 500, damping: 20 }}
-                >
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ type: 'spring', stiffness: 600, damping: 18 }}
-                  >
-                    <Check className="w-3 h-3 text-emerald-600" />
-                  </motion.div>
-                  <span className="line-through opacity-60">{gap}</span>
-                </motion.div>
-              ))}
+              {/* Resolved gaps — checked off */}
+              {completedGaps.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {completedGaps.map((gap) => (
+                    <motion.div
+                      key={gap}
+                      className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-700/70 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1"
+                      initial={{ scale: 1.2 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 500, damping: 20 }}
+                    >
+                      <motion.div
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ type: 'spring', stiffness: 600, damping: 18 }}
+                      >
+                        <Check className="w-3 h-3 text-emerald-600" />
+                      </motion.div>
+                      <span className="line-through opacity-60">{gap}</span>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+
+              {/* Matched skills — already in the resume */}
+              {matchedSkills.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
+                    Already matched
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {matchedSkills.map((skill) => (
+                      <span
+                        key={skill}
+                        className="flex items-center gap-1 text-[11px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-2.5 py-1"
+                      >
+                        <Check className="w-2.5 h-2.5 text-slate-400" />
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -546,6 +579,8 @@ export const DocumentPreview: React.FC = () => {
   const currentStep        = useAppStore((s) => s.currentStep);
   const currentAtsScore    = useAppStore((s) => s.currentAtsScore);
   const skillGaps          = useAppStore((s) => s.skillGaps);
+  const matchedSkills      = useAppStore((s) => s.matchedSkills);
+  const missingSkills      = useAppStore((s) => s.missingSkills);
   const pendingDiff        = useAppStore((s) => s.pendingDiff);
   const jobDescription     = useAppStore((s) => s.jobDescription);
   const setPendingDiff     = useAppStore((s) => s.setPendingDiff);
@@ -705,8 +740,14 @@ export const DocumentPreview: React.FC = () => {
 
       {/* ── Skill Gap Checklist ────────────────────────────────────────────── */}
       <AnimatePresence>
-        {skillGaps.length > 0 && hasContent && (
-          <SkillGapChecklist key="skill-gaps" gaps={skillGaps} resumeData={resumeData} />
+        {(skillGaps.length > 0 || matchedSkills.length > 0) && hasContent && (
+          <SkillGapChecklist
+            key="skill-gaps"
+            gaps={skillGaps}
+            missingSkills={missingSkills}
+            matchedSkills={matchedSkills}
+            resumeData={resumeData}
+          />
         )}
       </AnimatePresence>
 

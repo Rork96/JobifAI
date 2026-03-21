@@ -164,6 +164,12 @@ interface OnboardingSlice {
    */
   skillGaps: string[];
 
+  /** Skills present in BOTH the resume and JD (from /api/ats-score matched_skills). */
+  matchedSkills: string[];
+
+  /** Missing skills with real impact percentages (from /api/ats-score missing_skills). */
+  missingSkills: Array<{ skill: string; impact_percentage: number }>;
+
   setOnboardingMode:     (mode: 'upload' | 'scratch') => void;
   setUploadedResumeText: (text: string) => void;
   setJobDescription:     (jd: string) => void;
@@ -172,6 +178,8 @@ interface OnboardingSlice {
   /** Add `delta` (±1–5) to the live ATS score, clamped to [0, 100]. */
   bumpAtsScore:          (delta: number) => void;
   setSkillGaps:          (gaps: string[]) => void;
+  setMatchedSkills:      (skills: string[]) => void;
+  setMissingSkills:      (skills: Array<{ skill: string; impact_percentage: number }>) => void;
 }
 
 // ── Interview Slice ───────────────────────────────────────────────────────────
@@ -360,6 +368,8 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   realAtsScore:        null,
   currentAtsScore:     null,
   skillGaps:           [],
+  matchedSkills:       [],
+  missingSkills:       [],
 
   setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
   setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
@@ -373,6 +383,8 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
       : null,
   })),
   setSkillGaps:          (skillGaps)          => set({ skillGaps }),
+  setMatchedSkills:      (matchedSkills)      => set({ matchedSkills }),
+  setMissingSkills:      (missingSkills)      => set({ missingSkills }),
 });
 
 // ── Interview Slice Factory ────────────────────────────────────────────────────
