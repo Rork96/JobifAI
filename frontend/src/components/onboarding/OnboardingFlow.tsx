@@ -585,6 +585,16 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                 Show me how to beat them
                 <ArrowRight className="w-4 h-4" />
               </motion.button>
+
+              <motion.button
+                onClick={() => advanceTo(0)}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.6 }}
+              >
+                ← Go back
+              </motion.button>
             </motion.div>
           )}
 
@@ -679,35 +689,32 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         </div>
                       </div>
 
-                      <input
-                        type="text"
+                      <textarea
                         value={scratchJobInput}
                         onChange={(e) => setScratchJobInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleScratchSubmit(); }}
-                        placeholder="e.g. Senior Product Manager or https://…"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-brand-500/60 transition-colors"
+                        placeholder="Paste the full job description here, or a URL (https://…)"
+                        rows={5}
                         autoFocus
+                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-brand-500/60 resize-none transition-colors scrollbar-hidden"
                       />
+                      {scratchJobInput.trim().length > 0 && (
+                        <p className="text-[11px] text-gray-400 -mt-2 text-right">
+                          {scratchJobInput.trim().length.toLocaleString()} chars
+                        </p>
+                      )}
 
-                      <div className="flex gap-2">
-                        <button
-                          onClick={handleScratchSubmit}
-                          className="flex-1 bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 text-white font-semibold text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
-                        >
-                          <Sparkles className="w-3.5 h-3.5" />
-                          Start building →
-                        </button>
-                        <button
-                          onClick={handleScratchSubmit}
-                          className="text-xs text-slate-500 hover:text-slate-300 transition-colors px-3"
-                        >
-                          Skip
-                        </button>
-                      </div>
+                      <button
+                        onClick={handleScratchSubmit}
+                        disabled={!scratchJobInput.trim()}
+                        className="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        Start building →
+                      </button>
 
                       <button
                         onClick={() => { setShowScratchSubForm(false); setOnboardingMode('scratch'); }}
-                        className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center"
+                        className="text-xs text-gray-400 hover:text-gray-600 transition-colors text-center"
                       >
                         ← Go back
                       </button>
@@ -738,7 +745,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         className="flex items-center justify-center gap-3 py-3"
                       >
                         <MacMascot currentStep="idle" state="processing" />
-                        <span className="text-sm text-slate-400">
+                        <span className="text-sm text-gray-500">
                           {isParsingFile ? 'Extracting text from your file…' : 'Fetching job description…'}
                         </span>
                       </motion.div>
@@ -768,13 +775,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           ? 'border-orange-400 bg-orange-500/10'
                           : uploadedFilename
                             ? 'border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10'
-                            : 'border-slate-600 hover:border-slate-500 bg-slate-800/50 hover:bg-slate-800/80',
+                            : 'border-gray-300 hover:border-orange-400 bg-gray-50 hover:bg-orange-50/30',
                     ].join(' ')}
                   >
                     {isParsingFile ? (
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />
-                        <p className="text-xs text-slate-400">Parsing your resume…</p>
+                        <p className="text-xs text-gray-500">Parsing your resume…</p>
                       </div>
                     ) : uploadedFilename ? (
                       /* Success state — show filename + character count */
@@ -788,7 +795,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                             setUploadedFilename('');
                             setResumeText('');
                           }}
-                          className="ml-1 text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
+                          className="ml-1 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -796,12 +803,12 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                     ) : (
                       /* Default state */
                       <>
-                        <Upload className="w-5 h-5 text-slate-500 mx-auto mb-1.5" />
-                        <p className="text-xs text-slate-400">
+                        <Upload className="w-5 h-5 text-gray-400 mx-auto mb-1.5" />
+                        <p className="text-xs text-gray-500">
                           Drop your resume here or{' '}
-                          <span className="text-orange-400 font-medium">browse files</span>
+                          <span className="text-orange-500 font-medium">browse files</span>
                         </p>
-                        <p className="text-[10px] text-slate-600 mt-0.5">
+                        <p className="text-[10px] text-gray-400 mt-0.5">
                           PDF, DOCX, or TXT · Max 5 MB
                         </p>
                       </>
@@ -833,7 +840,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       onChange={(e) => setResumeText(e.target.value)}
                       placeholder={uploadedFilename ? 'Extracted text from your file…' : 'Or paste your resume text here…'}
                       rows={5}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 resize-none outline-none focus:border-orange-500/60 transition-colors scrollbar-hidden"
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 resize-none outline-none focus:border-orange-500/60 transition-colors scrollbar-hidden"
                     />
                   </div>
 
@@ -848,9 +855,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         in state (committed to store on submit).
                   ──────────────────────────────────────────────────────────── */}
                   <div className="flex flex-col gap-1">
-                    <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                      Target Job Description{' '}
-                      <span className="text-slate-600 normal-case font-normal">(optional)</span>
+                    <label className="text-[11px] font-semibold uppercase tracking-wider text-orange-500">
+                      Target Job Description <span className="text-red-400">*</span>
                     </label>
 
                     {/* Input row */}
@@ -858,7 +864,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       <div className="relative flex-1">
                         {/* URL icon — shown when input looks like a URL */}
                         {looksLikeUrl(jobInput) && (
-                          <Link2 className="absolute left-3 top-3 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+                          <Link2 className="absolute left-3 top-3 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
                         )}
                         <textarea
                           value={jobInput}
@@ -874,7 +880,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           placeholder="Paste a job URL (Indeed, LinkedIn…) or the full description"
                           rows={3}
                           className={[
-                            'w-full bg-slate-800 border border-slate-700 rounded-xl py-2.5 text-sm text-slate-200 placeholder:text-slate-600 resize-none outline-none focus:border-orange-500/60 transition-colors scrollbar-hidden',
+                            'w-full bg-gray-50 border border-gray-200 rounded-xl py-2.5 text-sm text-gray-900 placeholder:text-gray-400 resize-none outline-none focus:border-orange-500/60 transition-colors scrollbar-hidden',
                             looksLikeUrl(jobInput) ? 'pl-8 pr-3' : 'px-3',
                           ].join(' ')}
                         />
@@ -886,7 +892,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           type="button"
                           onClick={handleJobFetch}
                           disabled={isParsingJob}
-                          className="flex-shrink-0 mt-0.5 h-9 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-300 text-xs font-medium transition-colors flex items-center gap-1.5"
+                          className="flex-shrink-0 mt-0.5 h-9 px-3 rounded-xl bg-gray-200 hover:bg-gray-300 disabled:opacity-50 text-gray-700 text-xs font-medium transition-colors flex items-center gap-1.5"
                         >
                           {isParsingJob ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -913,7 +919,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           <span className="text-xs text-emerald-400 truncate">
                             {jobFetchedTitle}
                           </span>
-                          <span className="text-xs text-slate-600">
+                          <span className="text-xs text-gray-400">
                             · {jobFetchedText.length.toLocaleString()} chars
                           </span>
                         </motion.div>
@@ -964,23 +970,21 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                                 setShowPasteFallback(false);
                                 setJdPasteText('');
                               }}
-                              className="text-slate-500 hover:text-slate-300 transition-colors"
+                              className="text-gray-400 hover:text-gray-600 transition-colors"
                             >
                               <X className="w-3.5 h-3.5" />
                             </button>
                           </div>
 
-                          {/* Frosted-glass paste area */}
-                          <div className="relative rounded-xl overflow-hidden backdrop-blur-md bg-slate-800/70 border border-amber-500/30 shadow-lg shadow-amber-500/5">
-                            {/* Subtle gradient shimmer to make it feel premium */}
-                            <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 via-transparent to-transparent pointer-events-none" />
+                          {/* Paste area */}
+                          <div className="relative rounded-xl overflow-hidden border border-amber-400/40 shadow-sm bg-amber-50/60">
                             <textarea
                               value={jdPasteText}
                               onChange={(e) => setJdPasteText(e.target.value)}
                               placeholder="Paste the job description text here…"
                               rows={5}
                               autoFocus
-                              className="relative z-10 w-full bg-transparent px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none scrollbar-hidden"
+                              className="relative z-10 w-full bg-transparent px-3 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 resize-none outline-none scrollbar-hidden"
                             />
                             {/* Character count badge */}
                             {jdPasteText.length > 0 && (
@@ -1016,8 +1020,14 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   {/* ── Submit ─────────────────────────────────────────────── */}
                   <button
                     onClick={handleUploadSubmit}
-                    disabled={!resumeText.trim() || isParsingFile || isParsingJob}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 text-white font-semibold py-3 rounded-2xl transition-all flex items-center justify-center gap-2"
+                    disabled={
+                      !resumeText.trim() ||
+                      isParsingFile ||
+                      isParsingJob ||
+                      // JD is mandatory — need at least one of: fetched text, paste fallback, or typed input
+                      !(jobFetchedText || (showPasteFallback ? jdPasteText.trim() : jobInput.trim()))
+                    }
+                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-2xl transition-all flex items-center justify-center gap-2"
                   >
                     <Wand2 className="w-4 h-4" />
                     Analyse my resume →
@@ -1025,7 +1035,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
                   <button
                     onClick={() => { setOnboardingMode('scratch'); advanceTo(2); }}
-                    className="text-xs text-slate-500 hover:text-slate-300 text-center transition-colors"
+                    className="text-xs text-gray-400 hover:text-gray-600 text-center transition-colors"
                   >
                     ← Actually, start from scratch instead
                   </button>
@@ -1055,19 +1065,19 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-orange-400 mb-2">
                       {onboardingMode === 'upload' ? 'Scanning your resume' : 'Building your ATS profile'}
                     </p>
-                    <h2 className="text-xl font-bold text-slate-100">
+                    <h2 className="text-xl font-bold text-gray-900">
                       {onboardingMode === 'upload'
                         ? 'Checking ATS compatibility…'
                         : 'Preparing your clean slate…'}
                     </h2>
-                    <p className="mt-1 text-sm text-slate-400">
+                    <p className="mt-1 text-sm text-gray-500">
                       {onboardingMode === 'upload'
                         ? 'Analysing formatting, keywords, and action verbs'
                         : 'Setting up the perfect template for your industry'}
                     </p>
                   </div>
 
-                  <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
                     <motion.div
                       className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full"
                       style={{ width: `${scanProgress}%` }}
@@ -1092,7 +1102,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                               className="flex items-center gap-2 text-sm"
                             >
                               <CheckCircle2 className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
-                              <span className="text-slate-400">{item}</span>
+                              <span className="text-gray-500">{item}</span>
                             </motion.div>
                           )}
                         </AnimatePresence>
@@ -1114,7 +1124,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                     >
-                      <div className="flex items-center gap-2 text-slate-400 text-sm">
+                      <div className="flex items-center gap-2 text-gray-500 text-sm">
                         <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
                         Calculating semantic match…
                       </div>
@@ -1129,13 +1139,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           >
                             <button
                               onClick={() => { setApiScore(28); setRealAtsScore(28); }}
-                              className="w-full bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 text-orange-300 font-semibold text-sm py-2.5 rounded-xl transition-all"
+                              className="w-full bg-orange-500/10 border border-orange-500/30 hover:bg-orange-500/20 text-orange-600 font-semibold text-sm py-2.5 rounded-xl transition-all"
                             >
                               Skip & Continue to Workspace →
                             </button>
                             <button
                               onClick={() => { advanceTo(2); setScanComplete(false); setScanProgress(0); setApiScore(null); setShowSkipButton(false); }}
-                              className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center"
+                              className="text-xs text-gray-400 hover:text-gray-600 transition-colors text-center"
                             >
                               ← Go Back
                             </button>
@@ -1162,7 +1172,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         </motion.div>
 
                         <motion.p
-                          className="mt-2 text-base font-semibold text-slate-200"
+                          className="mt-2 text-base font-semibold text-gray-900"
                           initial={{ opacity: 0, y: 4 }}
                           animate={{ opacity: scoreCount >= apiScore ? 1 : 0, y: scoreCount >= apiScore ? 0 : 4 }}
                         >
@@ -1174,7 +1184,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                         </motion.p>
 
                         <motion.p
-                          className="mt-1 text-sm text-slate-400"
+                          className="mt-1 text-sm text-gray-500"
                           initial={{ opacity: 0 }}
                           animate={{ opacity: scoreCount >= apiScore ? 1 : 0 }}
                           transition={{ delay: 0.3 }}
@@ -1205,11 +1215,11 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                                 className="flex items-center gap-2.5 bg-red-500/8 border border-red-500/20 rounded-xl px-3 py-2"
                               >
                                 <AlertTriangle className="w-3 h-3 text-red-400 flex-shrink-0" />
-                                <span className="text-xs text-slate-300 font-medium">{gap}</span>
+                                <span className="text-xs text-gray-700 font-medium">{gap}</span>
                               </div>
                             ))}
                           </div>
-                          <p className="text-[11px] text-slate-500 mt-2">
+                          <p className="text-[11px] text-gray-400 mt-2">
                             Mac will help you work these into your resume naturally.
                           </p>
                         </motion.div>
@@ -1228,8 +1238,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                           {scoreCount}
                           <span className="text-3xl text-emerald-400/60">/100</span>
                         </motion.div>
-                        <p className="mt-2 text-base font-semibold text-slate-200">Clean slate — starting advantage.</p>
-                        <p className="mt-1 text-sm text-slate-400">
+                        <p className="mt-2 text-base font-semibold text-gray-900">Clean slate — starting advantage.</p>
+                        <p className="mt-1 text-sm text-gray-500">
                           No bad habits to unlearn. Mac will build your resume with ATS in mind from the start.
                         </p>
                       </div>
@@ -1257,7 +1267,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   {/* Go Back — always available so users are never trapped */}
                   <button
                     onClick={() => { advanceTo(2); setScanComplete(false); setScanProgress(0); setApiScore(null); setShowSkipButton(false); }}
-                    className="text-xs text-slate-600 hover:text-slate-400 transition-colors text-center w-full"
+                    className="text-xs text-gray-400 hover:text-gray-600 transition-colors text-center w-full"
                   >
                     ← Go Back
                   </button>

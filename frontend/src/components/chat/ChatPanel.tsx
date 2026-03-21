@@ -49,11 +49,6 @@ import React, {
 } from 'react';
 import ReactMarkdown from 'react-markdown';
 
-// ── Module-level singleton ─────────────────────────────────────────────────────
-// Persists across React Strict Mode mount cycles AND across multiple ChatPanel
-// instances (paywall screen + workspace screen both render MainLayout).
-// Prevents double-greeting no matter which instance fires first.
-let _hasGreeted = false;
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, MicOff, Send } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
@@ -244,6 +239,13 @@ export const ChatPanel: React.FC = () => {
   // without triggering an extra re-render.
   const rejectionMessageRef = useRef<string | null>(null);
 
+  // ── Greeting guard (useRef, not module-level) ────────────────────────────────
+  // useRef resets correctly when this specific ChatPanel instance is mounted
+  // fresh (e.g. workspace mount after paywall is unmounted).
+  // Module-level booleans over-prevent: once set true in the paywall ChatPanel,
+  // the workspace ChatPanel would never greet even after a full navigation cycle.
+  const hasGreetedRef = useRef(false);
+
   // ── Store subscriptions ──────────────────────────────────────────────────────
   const currentStep      = useAppStore((s) => s.currentStep);
   const messages         = useAppStore((s) => s.messages);
@@ -372,19 +374,22 @@ export const ChatPanel: React.FC = () => {
   }, [inputValue]);
 
   // ── Mac talks first — initial greeting ────────────────────────────────────
-  // Uses a module-level `_hasGreeted` flag (not useRef) so a single greeting
-  // fires across BOTH Strict Mode mount cycles AND across the two MainLayout
-  // instances that coexist during the paywall→workspace transition in App.tsx.
+  // Uses a useRef guard (not a module-level bool) so the flag resets correctly
+  // when this specific instance unmounts and a fresh workspace ChatPanel mounts.
   //
   // Logic:
   //   IF resumeData has content OR jobDescription/uploadedResumeText exist
-  //     → send ONE analysis prompt so Mac starts improving the resume immediately
+  //     → send ONE analysis prompt so Mac starts improving immediately
   //   ELSE
-  //     → send the default 'hi' to get the "What's the dream job?" greeting
+  //     → send the default 'hi' to start the "What's the dream job?" flow
+  //
+  // React 18 Strict Mode double-invokes effects: the cleanup `clearTimeout`
+  // cancels the first timer, and the second mount sets hasGreetedRef=true
+  // synchronously before the timeout fires — exactly one greeting results.
   useEffect(() => {
-    if (_hasGreeted) return;
+    if (hasGreetedRef.current) return;
     if (messages.length > 0) return;
-    _hasGreeted = true;
+    hasGreetedRef.current = true;
 
     const timer = setTimeout(async () => {
       // Double-check inside the timeout — messages may have arrived while waiting

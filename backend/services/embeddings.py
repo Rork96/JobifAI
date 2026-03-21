@@ -261,44 +261,50 @@ async def calculate_ats_score(
         score_int,
     )
 
-    # Step 4 — Skill gap extraction via Gemini (keyword-level, not semantic)
-    skill_gaps = await _extract_skill_gaps(resume_text, job_description)
+    # Step 4 — Skill analysis via Gemini (matched + missing with impact %)
+    skill_analysis = await _extract_skill_analysis(resume_text, job_description, score_int)
 
     return {
-        "score":      score_int,
-        "skill_gaps": skill_gaps,
+        "score":          score_int,
+        "skill_gaps":     skill_analysis["missing"],          # legacy flat list
+        "matched_skills": skill_analysis["matched"],
+        "missing_skills": skill_analysis["missing_with_impact"],
     }
 
 
-# ─── Skill gap analysis ───────────────────────────────────────────────────────
+# ─── Skill analysis (matched + missing with impact %) ─────────────────────────
 
-async def _extract_skill_gaps(resume_text: str, job_description: str) -> list[str]:
+async def _extract_skill_analysis(
+    resume_text: str,
+    job_description: str,
+    current_score: int,
+) -> dict:
     """
-    Use Gemini to find JD keywords that are missing or weak in the resume.
+    Use Gemini to identify matched skills and missing skills with impact estimates.
 
-    WHY LLM INSTEAD OF EMBEDDING DISTANCE FOR GAPS?
-      Embedding similarity tells us HOW WELL the resume matches overall.
-      But to tell a user WHAT TO ADD, we need exact keyword identification.
+    Returns:
+        {
+          "matched": ["Python", "React", ...],           # present in both
+          "missing": ["Kubernetes", "CI/CD", ...],       # flat list (legacy)
+          "missing_with_impact": [                       # structured list
+            {"skill": "Kubernetes", "impact_percentage": 8},
+            ...
+          ]
+        }
 
-      ATS scanners do literal substring matching — a resume that says
-      "container orchestration" does NOT pass an ATS looking for "Kubernetes",
-      even though semantically they're related.  Gemini reads both documents
-      like a recruiter would and surfaces the specific strings the user needs
-      to insert.
-
-    Returns up to 8 concrete, specific gaps (tools, certs, action phrases).
-    Soft skills and already-present items are excluded.
+    impact_percentage values are calibrated so their sum bridges
+    `current_score` → 100, giving users a roadmap to a perfect score.
     """
     if not job_description.strip():
-        return []
+        return {"matched": [], "missing": [], "missing_with_impact": []}
+
+    gap_to_fill = max(0, 100 - current_score)
 
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
         generation_config=genai.types.GenerationConfig(
             temperature=0.1,
-            # 1024 tokens — necessary for gemini-2.5-flash which uses thinking
-            # tokens internally.  With max_output_tokens=256 the model exhausts
-            # its budget mid-array and returns truncated JSON.
+            # 1024 tokens — necessary for gemini-2.5-flash thinking budget
             max_output_tokens=1024,
         ),
     )
@@ -307,42 +313,74 @@ async def _extract_skill_gaps(resume_text: str, job_description: str) -> list[st
         "You are an ATS keyword analyst.\n\n"
         f"JOB DESCRIPTION:\n{job_description[:1_500]}\n\n"
         f"RESUME:\n{resume_text[:2_000]}\n\n"
-        "Task: List the 6 most important skills, tools, or keywords that appear "
-        "in the Job Description but are MISSING or WEAK in the Resume.\n\n"
+        f"Current ATS score: {current_score}/100. Gap to fill: {gap_to_fill} points.\n\n"
+        "Task: Identify matched and missing skills.\n\n"
         "Rules:\n"
-        "- Only concrete, specific items: tools, certifications, hard skills "
-        "  (e.g. 'Kubernetes', 'Python', 'SQL')\n"
-        "- Do NOT list soft skills (communication, teamwork, leadership)\n"
-        "- Do NOT list items already clearly present in the resume\n"
-        "- Return ONLY a JSON array of strings — no markdown, no explanation\n"
-        '- Example: ["Kubernetes", "CI/CD", "React", "AWS"]'
+        "- Only concrete, specific items: tools, certs, hard skills (e.g. 'Kubernetes', 'Python')\n"
+        "- Do NOT include soft skills (communication, teamwork, etc.)\n"
+        "- matched: up to 8 skills present in BOTH resume and JD\n"
+        "- missing: up to 6 most impactful skills in JD but ABSENT from resume\n"
+        f"- impact_percentage for each missing skill: integer 1–30, values must SUM to exactly {gap_to_fill}\n"
+        "- Return ONLY this JSON — no markdown, no explanation:\n"
+        '{"matched": ["skill1", ...], "missing": [{"skill": "X", "impact_percentage": N}, ...]}'
     )
 
     try:
         response = await model.generate_content_async(prompt)
         raw = (response.text or "").strip()
 
-        # gemini-2.5-flash wraps output in ```json ... ``` fences — strip them
+        # Strip markdown fences if present
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```\s*$", "", raw).strip()
 
-        # Primary parse: valid JSON array
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return [str(g).strip() for g in parsed[:8] if g]
-        except json.JSONDecodeError:
-            pass
+        # Extract JSON object
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        parsed = json.loads(m.group(0) if m else raw)
 
-        # Fallback: extract quoted strings from partial/truncated JSON
-        # Handles the case where the model's output was cut mid-array.
-        items = re.findall(r'"([^"]{2,50})"', raw)
-        if items:
-            logger.info("Skill gaps recovered via regex fallback: %d items", len(items))
-            return items[:8]
+        matched: list[str] = [
+            str(s).strip() for s in parsed.get("matched", [])[:8] if s
+        ]
+        raw_missing = parsed.get("missing", [])
+        missing_structured: list[dict] = []
+        for item in raw_missing[:6]:
+            if isinstance(item, dict) and "skill" in item:
+                missing_structured.append({
+                    "skill": str(item["skill"]).strip(),
+                    "impact_percentage": max(1, min(30, int(item.get("impact_percentage", max(1, gap_to_fill // max(1, len(raw_missing))))))),
+                })
+            elif isinstance(item, str):
+                # Fallback: model returned plain strings instead of objects
+                missing_structured.append({
+                    "skill": item.strip(),
+                    "impact_percentage": max(1, gap_to_fill // max(1, len(raw_missing))),
+                })
 
-        return []
+        # Recalibrate impact_percentage so values sum to gap_to_fill
+        if missing_structured and gap_to_fill > 0:
+            total = sum(s["impact_percentage"] for s in missing_structured)
+            if total != gap_to_fill and total > 0:
+                scale = gap_to_fill / total
+                for i, s in enumerate(missing_structured):
+                    s["impact_percentage"] = max(1, round(s["impact_percentage"] * scale))
+                # Fix any rounding drift on the last item
+                actual = sum(s["impact_percentage"] for s in missing_structured)
+                missing_structured[-1]["impact_percentage"] += gap_to_fill - actual
+
+        missing_flat = [s["skill"] for s in missing_structured]
+
+        logger.info(
+            "Skill analysis — matched=%d  missing=%d  gap_filled=%d",
+            len(matched),
+            len(missing_structured),
+            sum(s["impact_percentage"] for s in missing_structured),
+        )
+
+        return {
+            "matched": matched,
+            "missing": missing_flat,
+            "missing_with_impact": missing_structured,
+        }
 
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Skill gap extraction failed (%s): %s", type(exc).__name__, exc)
-        return []
+        logger.warning("Skill analysis failed (%s): %s", type(exc).__name__, exc)
+        return {"matched": [], "missing": [], "missing_with_impact": []}

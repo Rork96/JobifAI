@@ -135,7 +135,8 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
   const [loadingPlan,   setLoadingPlan]   = useState<string | null>(null);
 
   // Grab the user's email so we can pre-fill the Stripe Checkout form
-  const userEmail = useAppStore((s) => s.user?.email);
+  const userEmail    = useAppStore((s) => s.user?.email);
+  const realAtsScore = useAppStore((s) => s.realAtsScore);
 
   // ── Triple-click easter egg ──────────────────────────────────────────────────
   const clickCountRef  = useRef(0);
@@ -215,15 +216,25 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
           initial={{ opacity: 0, y: 32, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.1 }}
-          className="w-full max-w-2xl bg-slate-900 rounded-3xl border border-slate-700/60 shadow-2xl overflow-hidden"
+          className="w-full max-w-2xl bg-slate-900 rounded-3xl border border-slate-700/60 shadow-2xl overflow-y-auto max-h-[90vh]"
         >
           {/* ── Header ────────────────────────────────────────────────────────── */}
           <div className="px-8 pt-8 pb-6 text-center border-b border-slate-800">
             {/* ATS score pill */}
-            <div className="inline-flex items-center gap-2 bg-red-500/15 border border-red-500/30 rounded-full px-4 py-1.5 mb-5">
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-red-400 text-xs font-semibold tracking-wide uppercase">
-                ATS Score: 34 / 100 — Below hiring threshold
+            <div className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-5 ${
+              (realAtsScore ?? 34) >= 80
+                ? 'bg-emerald-500/15 border border-emerald-500/30'
+                : (realAtsScore ?? 34) >= 50
+                  ? 'bg-amber-500/15 border border-amber-500/30'
+                  : 'bg-red-500/15 border border-red-500/30'
+            }`}>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${
+                (realAtsScore ?? 34) >= 80 ? 'bg-emerald-500' : (realAtsScore ?? 34) >= 50 ? 'bg-amber-500' : 'bg-red-500'
+              }`} />
+              <span className={`text-xs font-semibold tracking-wide uppercase ${
+                (realAtsScore ?? 34) >= 80 ? 'text-emerald-400' : (realAtsScore ?? 34) >= 50 ? 'text-amber-400' : 'text-red-400'
+              }`}>
+                ATS Score: {realAtsScore ?? 34} / 100 — {(realAtsScore ?? 34) < 50 ? 'Below hiring threshold' : (realAtsScore ?? 34) <= 80 ? 'Needs improvement' : 'Strong match'}
               </span>
             </div>
 
@@ -270,9 +281,32 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
             )}
           </AnimatePresence>
 
+          {/* ── Premium teaser buttons ───────────────────────────────────────── */}
+          <div className="px-8 pb-2">
+            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-3 text-center">
+              Also unlocked with Pro
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                disabled
+                className="flex items-center justify-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3 text-sm font-medium text-slate-500 cursor-not-allowed opacity-70"
+              >
+                <span>🪄</span> Cover Letter
+                <span className="ml-1 text-[10px] font-bold text-orange-500/80 uppercase tracking-wide">Pro</span>
+              </button>
+              <button
+                disabled
+                className="flex items-center justify-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3 text-sm font-medium text-slate-500 cursor-not-allowed opacity-70"
+              >
+                <span>🎯</span> Interview Prep
+                <span className="ml-1 text-[10px] font-bold text-orange-500/80 uppercase tracking-wide">Pro</span>
+              </button>
+            </div>
+          </div>
+
           {/* ── Free trial safety net ─────────────────────────────────────────── */}
           <div className="px-8 pb-8 text-center">
-            <div className="h-px bg-slate-800 mb-6" />
+            <div className="h-px bg-slate-800 mb-6 mt-6" />
             <button
               type="button"
               onClick={onAccessGranted}

@@ -86,16 +86,9 @@ body {
   }
 }
 
-.dark .glass {
-  background: rgba(0, 0, 0, 0.75);
-  @supports (backdrop-filter: blur(12px)) {
-    background: rgba(0, 0, 0, 0.55);
-  }
-}
-
 /* ── Skeleton / shimmer loading placeholder ──────────────────────────────── */
 .skeleton {
-  @apply bg-gray-200 dark:bg-gray-700 rounded animate-shimmer;
+  @apply bg-gray-200 rounded animate-shimmer;
   background-image: linear-gradient(
     90deg,
     transparent 25%,

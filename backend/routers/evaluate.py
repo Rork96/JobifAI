@@ -130,18 +130,28 @@ class AtsScoreRequest(BaseModel):
     job_description: str = Field(default="",         description="Plain text of the job posting")
 
 
+class MissingSkill(BaseModel):
+    """A single skill the resume lacks, with its estimated ATS impact."""
+    skill:             str = Field(..., description="Skill or keyword missing from the resume")
+    impact_percentage: int = Field(..., ge=1, le=30, description="Estimated ATS score gain if added")
+
+
 class AtsScoreResponse(BaseModel):
     """
     Result of the semantic ATS match calculation.
 
-    score:       0–100 integer.  Reflects cosine similarity rescaled to a
-                 user-readable percentage.  Below 50 = poor match.
-    skill_gaps:  Specific keywords/tools present in the JD but absent from
-                 the resume.  Each item is a concrete string the user can
-                 add verbatim to improve their ATS pass rate.
+    score:           0–100 integer.  Reflects cosine similarity rescaled to a
+                     user-readable percentage.  Below 50 = poor match.
+    skill_gaps:      Specific keywords/tools present in the JD but absent from
+                     the resume (legacy flat list — kept for backwards compat).
+    matched_skills:  Keywords/tools that are present in BOTH the resume and JD.
+    missing_skills:  Structured list of gaps with per-skill impact estimates.
+                     impact_percentage values sum to bridge score → 100%.
     """
-    score:      int        = Field(..., ge=0, le=100)
-    skill_gaps: list[str]  = Field(default_factory=list)
+    score:          int               = Field(..., ge=0, le=100)
+    skill_gaps:     list[str]         = Field(default_factory=list)
+    matched_skills: list[str]         = Field(default_factory=list)
+    missing_skills: list[MissingSkill] = Field(default_factory=list)
 
 
 # ─── Endpoint ──────────────────────────────────────────────────────────────────
@@ -295,13 +305,20 @@ async def ats_score(
             job_description=body.job_description,
         )
         logger.info(
-            "ATS score endpoint — score=%d  gaps=%d",
+            "ATS score endpoint — score=%d  gaps=%d  matched=%d",
             result["score"],
             len(result["skill_gaps"]),
+            len(result.get("matched_skills", [])),
         )
+        missing = [
+            MissingSkill(skill=m["skill"], impact_percentage=m["impact_percentage"])
+            for m in result.get("missing_skills", [])
+        ]
         return AtsScoreResponse(
             score=result["score"],
             skill_gaps=result["skill_gaps"],
+            matched_skills=result.get("matched_skills", []),
+            missing_skills=missing,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -309,7 +326,7 @@ async def ats_score(
             type(exc).__name__,
             exc,
         )
-        return AtsScoreResponse(score=0, skill_gaps=[])
+        return AtsScoreResponse(score=0, skill_gaps=[], matched_skills=[], missing_skills=[])
 
 
 # ─── Magic Rewrite Endpoint ────────────────────────────────────────────────────
