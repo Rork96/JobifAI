@@ -581,8 +581,9 @@ const Scrim: React.FC<{ onDismiss: () => void }> = ({ onDismiss }) => (
 export const MainLayout: React.FC<{ auth: AuthActions }> = ({ auth }) => {
   const isDesktop = useIsDesktop();
 
-  // Bottom Sheet open/close state — only relevant on mobile
+  // Bottom Sheet open state — true when snap >= 1 (50%+ visible)
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const bottomSheetRef = useRef<{ snapTo: (level: 0 | 1 | 2) => void } | null>(null);
 
   // Close the sheet when switching to desktop to avoid stale state
   useEffect(() => {
@@ -638,17 +639,17 @@ export const MainLayout: React.FC<{ auth: AuthActions }> = ({ auth }) => {
             </div>
           </div>
 
-          {/* Scrim — only visible when the sheet is fully open */}
+          {/* Scrim — only visible when the sheet is at 50%+ */}
           <AnimatePresence>
             {isSheetOpen && (
-              <Scrim onDismiss={() => setIsSheetOpen(false)} />
+              <Scrim onDismiss={() => bottomSheetRef.current?.snapTo(0)} />
             )}
           </AnimatePresence>
 
-          {/* Bottom Sheet with ChatPanel inside */}
+          {/* Bottom Sheet with ChatPanel inside — 3 snap points */}
           <BottomSheet
-            isOpen={isSheetOpen}
-            onToggle={() => setIsSheetOpen((prev) => !prev)}
+            ref={bottomSheetRef}
+            onOpenChange={setIsSheetOpen}
           >
             <ChatPanel />
           </BottomSheet>

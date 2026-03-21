@@ -1,181 +1,193 @@
 /**
- * components/ui/BottomSheet.tsx — iOS-style Draggable Bottom Sheet
+ * components/ui/BottomSheet.tsx — iOS-style Draggable Bottom Sheet (3-Snap)
  * ─────────────────────────────────────────────────────────────────────────────
- * This is the mobile layout's primary navigation surface — it slides up from
- * the bottom to reveal the chat panel, covering ~82% of the screen.
+ * Three snap points (driven by the proportion of viewport height visible):
  *
- * HOW THE PHYSICS WORK:
- *   The sheet has two "snap points":
- *     • open  → y = 0            (sheet fully visible, anchored to bottom)
- *     • peek  → y = sheetH - 80  (only the handle strip is visible)
+ *   Snap 0 — 20% visible  ("Peek" — only Mac mascot strip + handle)
+ *   Snap 1 — 50% visible  ("Half"  — half the chat, comfortable scroll)
+ *   Snap 2 — 80% visible  ("Full"  — full chat experience)
  *
- *   `drag="y"` lets the user grab and move it.  After they release:
- *     • If they dragged far enough OR fast enough → snap to the other state
- *     • Otherwise → spring back to the current state
+ * SNAP SELECTION ALGORITHM:
+ *   On drag release, we look at velocity AND current Y position:
+ *   • Velocity > threshold → snap to the adjacent point in the drag direction
+ *   • Otherwise           → snap to the nearest point by distance
  *
- *   `useAnimation()` gives us an imperative API to trigger snaps from code.
- *   Spring physics (type: 'spring', stiffness, damping) make the snaps feel
- *   physical — they always overshoot and settle, unlike CSS ease curves.
+ * HANDLE BEHAVIOUR:
+ *   Tapping the handle cycles upward through snap levels (0 → 1 → 2 → 0).
+ *   This lets the user open the sheet without needing to drag.
  *
- * WHY NOT CSS transitions?
- *   CSS can't respond to drag velocity.  Framer Motion can — a fast flick
- *   snaps instantly; a slow drag needs to cross a distance threshold.
+ * PARENT API (unchanged from the 2-snap version — backward compatible):
+ *   `onOpenChange(isOpen: boolean)` is called whenever the snap level crosses
+ *   the 50% threshold (snap 0 = closed, snap 1/2 = open).  The parent uses
+ *   this to show/hide the Scrim overlay.
+ *
+ * Haptic: `navigator.vibrate([50])` fires when the sheet is fully opened
+ * (snap 2) to signal "panel open" to mobile users.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, useAnimation, type PanInfo } from 'framer-motion';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const OPEN_HEIGHT_RATIO = 0.82;  // Sheet occupies 82% of viewport height when open
-const PEEK_HEIGHT       = 80;    // Pixels visible when sheet is in "peek" state
 
 const SPRING = {
   type:      'spring',
-  stiffness: 400,
-  damping:   38,
+  stiffness: 380,
+  damping:   36,
 } as const;
 
-// Thresholds for snap decision on drag release
-const VELOCITY_THRESHOLD = 350;  // px/s — a brisk flick commits the snap
-const OFFSET_THRESHOLD   = 90;   // px  — a 90px drag commits the snap
+const VELOCITY_THRESHOLD = 300; // px/s — a brisk flick snaps to adjacent point
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 interface BottomSheetProps {
   /** Content rendered inside the sheet (typically ChatPanel). */
   children: React.ReactNode;
-  /** Controlled open state — parent drives this via onToggle. */
-  isOpen: boolean;
-  /** Callback to toggle the open state in the parent. */
-  onToggle: () => void;
+  /**
+   * Called whenever the open state changes across the 50% threshold.
+   * true  → snap 1 or 2 (50%+ visible)
+   * false → snap 0 (20% visible / peek)
+   */
+  onOpenChange?: (isOpen: boolean) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export const BottomSheet: React.FC<BottomSheetProps> = ({
-  children,
-  isOpen,
-  onToggle,
-}) => {
-  // Compute snap point values in pixels so dragConstraints can be exact.
-  // We read window.innerHeight at mount and update on resize.
-  const [sheetHeight, setSheetHeight] = useState(
-    () => window.innerHeight * OPEN_HEIGHT_RATIO,
-  );
+export const BottomSheet = React.forwardRef<{ snapTo: (level: 0 | 1 | 2) => void }, BottomSheetProps>(
+  ({ children, onOpenChange }, ref) => {
+
+  // ── Snap geometry ──────────────────────────────────────────────────────────
+  // All snap positions are expressed as Y offsets from the fully-open position
+  // (y=0 means the sheet shows its full `sheetHeight`).
+  //
+  // sheetHeight = 80% of viewport (the tallest the sheet can grow)
+  // y0 = 0                           → shows 80% of viewport (Snap 2: Full)
+  // y1 = sheetHeight − vh×0.50       → shows 50% of viewport (Snap 1: Half)
+  // y2 = sheetHeight − vh×0.20       → shows 20% of viewport (Snap 0: Peek)
+
+  const [vh, setVh] = useState(() => window.innerHeight);
 
   useEffect(() => {
-    const handler = () => setSheetHeight(window.innerHeight * OPEN_HEIGHT_RATIO);
+    const handler = () => setVh(window.innerHeight);
     window.addEventListener('resize', handler, { passive: true });
     return () => window.removeEventListener('resize', handler);
   }, []);
 
-  // peekY = how far to push the sheet DOWN from its natural (bottom-anchored) position
-  // so that only PEEK_HEIGHT pixels are visible.
-  const peekY = sheetHeight - PEEK_HEIGHT;
+  const sheetHeight = vh * 0.80;
 
-  // Framer Motion animation controller — lets us imperatively trigger animations
-  // from inside event handlers (not just from prop changes).
+  // Snap Y positions (distance to push sheet DOWN from its natural top edge)
+  const snapY = {
+    2: 0,                            // Full  — 80% visible
+    1: sheetHeight - vh * 0.50,      // Half  — 50% visible
+    0: sheetHeight - vh * 0.20,      // Peek  — 20% visible
+  } as const;
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [snapLevel, setSnapLevel] = useState<0 | 1 | 2>(0);
+  const snapLevelRef = useRef<0 | 1 | 2>(0);
   const controls = useAnimation();
 
-  // Ref so handleDragEnd can read current `isOpen` without a stale closure.
-  // (Event handlers capture the value at creation time, not at call time.)
-  const isOpenRef = useRef(isOpen);
-  isOpenRef.current = isOpen;
+  // Keep ref in sync (event handlers need the current value without re-creating)
+  snapLevelRef.current = snapLevel;
 
-  // Sync animation whenever parent changes isOpen OR when peekY recalculates
-  useEffect(() => {
-    controls.start({
-      y: isOpen ? 0 : peekY,
-      transition: SPRING,
-    });
-  }, [isOpen, peekY, controls]);
+  // ── Animate to snap position ───────────────────────────────────────────────
+  const animateTo = useCallback((level: 0 | 1 | 2) => {
+    controls.start({ y: snapY[level], transition: SPRING });
+    setSnapLevel(level);
+    onOpenChange?.(level >= 1);
 
-  /**
-   * Snap logic on drag release.
-   *
-   * We check BOTH velocity AND offset so the sheet responds naturally to:
-   *   • Quick flicks (high velocity, small offset) → snap
-   *   • Slow deliberate drags (low velocity, large offset) → snap
-   *   • Accidental nudges (low velocity, small offset) → spring back
-   */
-  const handleDragEnd = (
-    _event: PointerEvent | MouseEvent | TouchEvent,
-    info: PanInfo,
-  ) => {
-    const currentlyOpen = isOpenRef.current;
-    const { velocity, offset } = info;
-
-    if (currentlyOpen) {
-      // Sheet is open → positive (downward) gesture should close to peek
-      if (velocity.y > VELOCITY_THRESHOLD || offset.y > OFFSET_THRESHOLD) {
-        onToggle(); // Flip parent state → useEffect re-runs → snaps to peek
-      } else {
-        // Didn't commit — snap back to open
-        controls.start({ y: 0, transition: SPRING });
-      }
-    } else {
-      // Sheet is peeking → negative (upward) gesture should open
-      if (velocity.y < -VELOCITY_THRESHOLD || offset.y < -OFFSET_THRESHOLD) {
-        onToggle(); // Flip → snaps to open
-      } else {
-        // Didn't commit — snap back to peek
-        controls.start({ y: peekY, transition: SPRING });
+    if (level === 2) {
+      // Haptic: "panel fully open"
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate([50]);
       }
     }
-  };
+  }, [controls, snapY, onOpenChange]);
 
+  // Re-animate when geometry changes (viewport resize)
+  useEffect(() => {
+    controls.start({ y: snapY[snapLevelRef.current], transition: SPRING });
+  }, [vh]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Expose imperative API via forwardRef
+  React.useImperativeHandle(ref, () => ({
+    snapTo: (level: 0 | 1 | 2) => animateTo(level),
+  }), [animateTo]);
+
+  // ── Drag end — snap to nearest point with velocity bias ───────────────────
+  const handleDragEnd = useCallback((_e: PointerEvent | MouseEvent | TouchEvent, info: PanInfo) => {
+    const { velocity, offset } = info;
+    const current = snapLevelRef.current;
+
+    let target: 0 | 1 | 2;
+
+    if (velocity.y < -VELOCITY_THRESHOLD) {
+      // Fast upward flick → go one level higher
+      target = Math.min(2, current + 1) as 0 | 1 | 2;
+    } else if (velocity.y > VELOCITY_THRESHOLD) {
+      // Fast downward flick → go one level lower
+      target = Math.max(0, current - 1) as 0 | 1 | 2;
+    } else {
+      // No clear velocity — pick nearest snap by Y position
+      // Current Y = snapY[current] + drag offset
+      const currentY = snapY[current] + offset.y;
+      const distances = ([0, 1, 2] as const).map((lvl) => ({
+        level: lvl,
+        dist:  Math.abs(snapY[lvl] - currentY),
+      }));
+      distances.sort((a, b) => a.dist - b.dist);
+      target = distances[0].level;
+    }
+
+    animateTo(target);
+  }, [animateTo, snapY]);
+
+  // ── Handle tap — cycle upward (0→1→2→0) ──────────────────────────────────
+  const handleHandleTap = useCallback(() => {
+    const next = ((snapLevelRef.current + 1) % 3) as 0 | 1 | 2;
+    animateTo(next);
+  }, [animateTo]);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <motion.div
-      // ── Framer Motion drag configuration ──────────────────────────────────
       drag="y"
-
-      // Constrain the drag to [0, peekY] in pixels.
-      //   top: 0    → can't drag sheet ABOVE its fully-open position
-      //   bottom: peekY → can't drag it further down than the peek position
-      dragConstraints={{ top: 0, bottom: peekY }}
-
-      // Small elastic feel at the boundaries — like a physical object hitting a stop.
-      // 0 = rigid stop, 1 = completely elastic (flies off screen).
-      dragElastic={{ top: 0.05, bottom: 0.08 }}
-
+      dragConstraints={{ top: 0, bottom: snapY[0] }}
+      dragElastic={{ top: 0.04, bottom: 0.06 }}
       onDragEnd={handleDragEnd}
-
-      // Imperative animation controller (synced with isOpen via useEffect)
       animate={controls}
-
-      // Start in "peek" state — only the handle strip visible
-      initial={{ y: peekY }}
-
-      // ── Visual styles ──────────────────────────────────────────────────────
+      initial={{ y: snapY[0] }}
       className={[
         'fixed bottom-0 left-0 right-0 z-30',
         'flex flex-col',
         'bg-white dark:bg-surface-dark',
         'rounded-t-4xl',
         'shadow-sheet',
-        // Prevent inner text selection while dragging
         'select-none',
       ].join(' ')}
       style={{ height: sheetHeight }}
     >
       {/* ── Drag Handle ──────────────────────────────────────────────────── */}
-      {/*
-        The handle serves double duty:
-          1. Visual affordance — tells users "this can be dragged"
-          2. Tap target — tapping the bar toggles open/peek without dragging
-      */}
       <button
-        onClick={onToggle}
+        onClick={handleHandleTap}
         className="flex-shrink-0 flex flex-col items-center justify-center gap-1 pt-3 pb-2 cursor-grab active:cursor-grabbing"
-        aria-label={isOpen ? 'Collapse chat panel' : 'Expand chat panel'}
-        aria-expanded={isOpen}
+        aria-label={
+          snapLevel === 0 ? 'Expand chat panel'
+          : snapLevel === 1 ? 'Expand to full chat'
+          : 'Minimise chat panel'
+        }
+        aria-expanded={snapLevel > 0}
       >
-        {/* The pill */}
-        <div className="w-10 h-1 rounded-full bg-gray-300 dark:bg-gray-600 transition-colors" />
+        {/* Pill — gets slightly wider as the sheet opens */}
+        <motion.div
+          className="h-1 rounded-full bg-gray-300 dark:bg-gray-600 transition-colors"
+          animate={{ width: snapLevel === 2 ? 48 : snapLevel === 1 ? 36 : 28 }}
+          transition={SPRING}
+        />
 
-        {/* Mini label — fades in only when peeking so it doesn't clutter open view */}
+        {/* Label — only visible at peek (snap 0) */}
         <motion.span
           className="text-xs font-medium text-gray-400 dark:text-gray-500"
-          animate={{ opacity: isOpen ? 0 : 1 }}
+          animate={{ opacity: snapLevel === 0 ? 1 : 0, height: snapLevel === 0 ? 'auto' : 0 }}
           transition={{ duration: 0.15 }}
         >
           Chat with Mac
@@ -183,14 +195,11 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
       </button>
 
       {/* ── Sheet Content ─────────────────────────────────────────────────── */}
-      {/*
-        `pointer-events-none` while dragging prevents accidental taps on
-        the content when the user is just trying to drag.
-        We let Framer Motion's `dragListener` handle the gesture recognition.
-      */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {children}
       </div>
     </motion.div>
   );
-};
+});
+
+BottomSheet.displayName = 'BottomSheet';

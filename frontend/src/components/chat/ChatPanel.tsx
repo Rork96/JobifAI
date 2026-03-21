@@ -253,6 +253,7 @@ export const ChatPanel: React.FC = () => {
   const setIsGenerating  = useAppStore((s) => s.setIsGenerating);
   const updateResumeData = useAppStore((s) => s.updateResumeData);
   const skillGaps        = useAppStore((s) => s.skillGaps);
+  const bumpAtsScore     = useAppStore((s) => s.bumpAtsScore);
 
   // ── Speech Recognition ───────────────────────────────────────────────────────
   const {
@@ -319,6 +320,24 @@ export const ChatPanel: React.FC = () => {
     if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
     setIsWarning(true);
     warningTimerRef.current = setTimeout(() => setIsWarning(false), 2000);
+  }, []);
+
+  // ── Skill gap chip insertion (from DocumentPreview checklist) ───────────────
+  // DocumentPreview dispatches 'jobifai:insertSkill' when the user clicks a gap
+  // chip.  We listen here (rather than prop-drilling) to keep the two panels
+  // independent while sharing one behaviour.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { gap } = (e as CustomEvent<{ gap: string }>).detail;
+      setInputValue((prev) =>
+        prev.trim()
+          ? `${prev.trim()} I have experience with ${gap}. `
+          : `I have experience with ${gap}. `,
+      );
+      textareaRef.current?.focus();
+    };
+    window.addEventListener('jobifai:insertSkill', handler);
+    return () => window.removeEventListener('jobifai:insertSkill', handler);
   }, []);
 
   // ── Autogrow textarea ─────────────────────────────────────────────────────
@@ -503,12 +522,15 @@ export const ChatPanel: React.FC = () => {
     const langResume   = resumeLang;
     const ctxData      = resumeData;
 
-    // 1. Optimistic UI — user sees their message immediately
+    // 1. Haptic feedback on send — single 50 ms pulse signals "message sent"
+    hapticFeedback([50]);
+
+    // 2. Optimistic UI — user sees their message immediately
     addMessage({ role: 'user', content: trimmed });
     setInputValue('');
     baseSpeechTextRef.current = '';
 
-    // 2. Enter "thinking" phase
+    // 3. Enter "thinking" phase
     setIsGenerating(true);
     setStreamingContent('');  // '' = streaming started, no tokens yet (shows dots)
 
@@ -640,9 +662,15 @@ export const ChatPanel: React.FC = () => {
                   );
 
                   if (evaluation.approved) {
-                    // ── Approved: commit to store + double-tap haptic ────
+                    // ── Approved: commit to store + bump ATS + haptic ───
                     updateResumeData(extracted.data);
-                    hapticFeedback([10, 30, 10]);
+                    if (evaluation.score_delta > 0) {
+                      bumpAtsScore(evaluation.score_delta);
+                      // Extra vibration pulse when ATS score actually improves
+                      hapticFeedback([10, 20, 30]);
+                    } else {
+                      hapticFeedback([10, 30, 10]);
+                    }
                   } else {
                     // ── Rejected: store reason to emit after the turn ────
                     // We don't commit the data or fire haptic.

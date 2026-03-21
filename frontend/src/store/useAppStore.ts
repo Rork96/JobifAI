@@ -38,6 +38,29 @@ import type {
 } from '@/types';
 import { INTERVIEW_STEP_ORDER } from '@/types';
 
+// ── Diff Proposal ─────────────────────────────────────────────────────────────
+/**
+ * Represents a pending AI-suggested rewrite for a specific resume section.
+ * The user must Accept or Reject — the draft is NOT updated until accepted.
+ *
+ * fieldPath encoding:
+ *   'summary'                                    → resumeData.summary
+ *   'targetTitle'                                → resumeData.targetTitle
+ *   'experiences.{expId}.responsibilities.{idx}' → specific bullet point
+ */
+export interface DiffProposal {
+  /** Encoded path to the field being rewritten. */
+  fieldPath: string;
+  /** The current text (shown with red strikethrough in the diff view). */
+  oldText: string;
+  /** The AI-suggested replacement (shown with green background). */
+  newText: string;
+  /** Predicted ATS score improvement in percentage points (e.g. 5 → "+5%"). */
+  predictedScoreIncrease: number;
+  /** The currentAtsScore value at the moment Magic was triggered — for the "X% → Y%" badge. */
+  baselineScore: number;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SLICE TYPE DEFINITIONS
 // Each interface defines the state shape + action signatures for one concern.
@@ -126,6 +149,14 @@ interface OnboardingSlice {
   realAtsScore: number | null;
 
   /**
+   * The LIVE ATS score displayed in the DocumentPreview header.
+   * Initialized from `realAtsScore` on onboarding completion.
+   * Bumped by `bumpAtsScore(delta)` each time an edit is approved by the scorer.
+   * Drives the animated count-up/down number in the header.
+   */
+  currentAtsScore: number | null;
+
+  /**
    * Keywords present in the JD but absent from the resume.
    * Surfaced in the Step 3 "shock" UI as a to-do checklist.
    * The interview agent uses this list to prompt the user for the
@@ -137,6 +168,9 @@ interface OnboardingSlice {
   setUploadedResumeText: (text: string) => void;
   setJobDescription:     (jd: string) => void;
   setRealAtsScore:       (score: number) => void;
+  setCurrentAtsScore:    (score: number) => void;
+  /** Add `delta` (±1–5) to the live ATS score, clamped to [0, 100]. */
+  bumpAtsScore:          (delta: number) => void;
   setSkillGaps:          (gaps: string[]) => void;
 }
 
@@ -228,11 +262,29 @@ interface InterviewSlice {
    * Called when the user wants to start over from scratch.
    */
   resetInterview: () => void;
+
+  // ── Diff / Magic Rewrite ────────────────────────────────────────────────────
+  /**
+   * The pending AI diff proposal.  Non-null while the diff overlay is shown.
+   * The user must Accept or Reject before continuing.
+   */
+  pendingDiff: DiffProposal | null;
+
+  setPendingDiff: (diff: DiffProposal | null) => void;
+
+  /**
+   * Accept the pending diff — apply `newText` to the correct resumeData field
+   * and clear `pendingDiff`.
+   */
+  applyDiff: () => void;
 }
 
 // ── Combined store type ───────────────────────────────────────────────────────
 /** The full store shape — intersection of all four slices. */
 type AppStore = AuthSlice & LangSlice & OnboardingSlice & InterviewSlice;
+
+// Re-export for use in components
+export type { AppStore };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SLICE FACTORIES
@@ -306,12 +358,20 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   uploadedResumeText:  '',
   jobDescription:      '',
   realAtsScore:        null,
+  currentAtsScore:     null,
   skillGaps:           [],
 
   setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
   setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
   setJobDescription:     (jobDescription)     => set({ jobDescription }),
-  setRealAtsScore:       (realAtsScore)       => set({ realAtsScore }),
+  // Setting realAtsScore also initialises currentAtsScore (the live display value)
+  setRealAtsScore:       (score)              => set({ realAtsScore: score, currentAtsScore: score }),
+  setCurrentAtsScore:    (score)              => set({ currentAtsScore: score }),
+  bumpAtsScore: (delta) => set((state) => ({
+    currentAtsScore: state.currentAtsScore !== null
+      ? Math.min(100, Math.max(0, state.currentAtsScore + delta))
+      : null,
+  })),
   setSkillGaps:          (skillGaps)          => set({ skillGaps }),
 });
 
@@ -394,6 +454,41 @@ const createInterviewSlice: StateCreator<AppStore, [], [], InterviewSlice> = (se
     messages:     [],
     resumeData:   {},
     isGenerating: false,
+  }),
+
+  // ── Diff / Magic Rewrite ──────────────────────────────────────────────────
+  pendingDiff: null,
+
+  setPendingDiff: (diff) => set({ pendingDiff: diff }),
+
+  applyDiff: () => set((state) => {
+    const diff = state.pendingDiff;
+    if (!diff) return {};
+
+    const { fieldPath, newText } = diff;
+    const parts = fieldPath.split('.');
+    const rd = { ...state.resumeData };
+
+    if (parts[0] === 'summary') {
+      rd.summary = newText;
+    } else if (parts[0] === 'targetTitle') {
+      rd.targetTitle = newText;
+    } else if (parts[0] === 'experiences' && parts[2] === 'responsibilities') {
+      const expId = parts[1];
+      const idx   = parseInt(parts[3], 10);
+      rd.experiences = rd.experiences?.map((exp) =>
+        exp.id === expId
+          ? {
+              ...exp,
+              responsibilities: exp.responsibilities.map((r, i) =>
+                i === idx ? newText : r,
+              ),
+            }
+          : exp,
+      );
+    }
+
+    return { resumeData: rd, pendingDiff: null };
   }),
 });
 

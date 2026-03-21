@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import google.generativeai as genai
@@ -40,7 +41,6 @@ from ..config import Settings, get_settings
 from ..services.embeddings import calculate_ats_score
 
 logger = logging.getLogger("jobifai.evaluate")
-
 
 # ─── Router ───────────────────────────────────────────────────────────────────
 router = APIRouter(
@@ -310,3 +310,170 @@ async def ats_score(
             exc,
         )
         return AtsScoreResponse(score=0, skill_gaps=[])
+
+
+# ─── Magic Rewrite Endpoint ────────────────────────────────────────────────────
+
+_REWRITE_SYSTEM = """\
+You are an elite Canadian resume writer with expertise in ATS optimisation.
+Your job: rewrite a single resume text snippet to be stronger, more specific,
+and more likely to pass ATS scanners — WITHOUT inventing facts.
+
+Rules:
+1. PRESERVE all factual claims (company, role, metrics, technologies).
+2. START with a strong action verb (Led, Built, Engineered, Reduced, etc.).
+3. ADD specificity where the original is vague — suggest a placeholder like
+   "[X%]" if no metric is present, so the user knows where to add one.
+4. Keep the rewrite concise: 1–2 lines maximum.
+5. Match the target job description keywords if provided.
+6. NEVER invent facts, dates, or numbers that weren't in the original.
+
+Return ONLY this JSON — no markdown, no code fences:
+{"new_text": "the rewritten text", "predicted_score_increase": integer_3_to_8}
+
+predicted_score_increase must be an integer between 3 and 8 representing the
+estimated ATS score improvement in percentage points.
+"""
+
+
+class RewriteRequest(BaseModel):
+    """
+    A single resume text snippet the user wants the AI to improve.
+
+    section:          Human-readable label for context ("Experience bullet", "Summary", etc.)
+    old_text:         The exact text to rewrite — must be preserved factually.
+    job_description:  Optional JD text for keyword alignment (up to 600 chars used).
+    resume_context:   Optional condensed existing resume for duplicate / continuity detection.
+    """
+    section:          str = Field(..., min_length=1, max_length=100)
+    old_text:         str = Field(..., min_length=1, max_length=1000)
+    job_description:  str = Field(default="", max_length=2000)
+    resume_context:   str = Field(default="", max_length=1500)
+
+
+class RewriteResponse(BaseModel):
+    """
+    Structured diff payload consumed by the frontend DiffOverlay component.
+
+    section:                 Echoed back from the request (for display in the diff header).
+    old_text:                The original text (shown with red strikethrough in the diff UI).
+    new_text:                The AI rewrite (shown with green background).
+    predicted_score_increase: Estimated ATS score improvement in percentage points (3–8).
+    """
+    section:                 str = Field(..., description="Section label (echoed from request)")
+    old_text:                str = Field(..., description="Original text")
+    new_text:                str = Field(..., description="AI-rewritten text")
+    predicted_score_increase: int = Field(..., ge=3, le=8, description="Estimated ATS improvement %")
+
+
+@router.post(
+    "/rewrite-section",
+    response_model=RewriteResponse,
+    summary="AI Magic Rewrite — improve a specific resume text snippet",
+    description="""
+Rewrites a single resume bullet, summary, or title using an expert resume-writing
+agent and returns a structured diff:
+
+```json
+{
+  "section": "Experience bullet",
+  "old_text": "worked on the backend",
+  "new_text": "Engineered RESTful microservices in Python, reducing API latency by [X%]",
+  "predicted_score_increase": 6
+}
+```
+
+The frontend renders a GitHub PR-style diff and lets the user Accept or Reject.
+Only an Accepted diff updates the live resume state.
+
+**Fail-safe**: On any Gemini error, the endpoint echoes `old_text` as `new_text`
+with `predicted_score_increase: 0` so the frontend handles the error gracefully.
+    """,
+)
+async def rewrite_section(
+    body: RewriteRequest,
+    settings: Settings = Depends(get_settings),
+) -> RewriteResponse:
+    """
+    POST /api/rewrite-section — The "✨ Magic" button backend.
+
+    Uses Gemini at temperature=0.4 (slightly creative, but not hallucination-prone)
+    to produce a better version of the provided text snippet.
+    """
+    genai.configure(api_key=settings.gemini_api_key)
+
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=_REWRITE_SYSTEM,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.4,
+            top_p=0.95,
+            max_output_tokens=512,
+        ),
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        },
+    )
+
+    jd_section = ""
+    if body.job_description.strip():
+        jd_section = f"\n\nTarget job description (for keyword alignment):\n{body.job_description[:600]}"
+
+    ctx_section = ""
+    if body.resume_context.strip():
+        ctx_section = f"\n\nExisting resume context (avoid duplicating):\n{body.resume_context[:600]}"
+
+    prompt = (
+        f"Section: {body.section}\n"
+        f"Text to rewrite: {body.old_text}"
+        f"{jd_section}"
+        f"{ctx_section}\n\n"
+        "Return ONLY the JSON — no other text."
+    )
+
+    try:
+        response = await model.generate_content_async(prompt)
+        raw = (response.text or "").strip()
+
+        # Try full JSON parse first (ideal path)
+        new_text: str = body.old_text
+        delta: int = 5
+        try:
+            m = re.search(r'\{.*\}', raw, re.DOTALL)
+            result = json.loads(m.group(0) if m else raw)
+            new_text = str(result.get("new_text", body.old_text))
+            delta = max(3, min(8, int(result.get("predicted_score_increase", 5))))
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            # Fallback: extract new_text value directly from partial JSON
+            tm = re.search(r'"new_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+            if tm:
+                new_text = tm.group(1)
+            dm = re.search(r'"predicted_score_increase"\s*:\s*(\d+)', raw)
+            if dm:
+                delta = max(3, min(8, int(dm.group(1))))
+
+        logger.info("Rewrite — section=%s delta=%s extracted=%r", body.section, delta, new_text[:60])
+
+        return RewriteResponse(
+            section=body.section,
+            old_text=body.old_text,
+            new_text=new_text,
+            predicted_score_increase=delta,
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Rewrite endpoint error (fail-safe) — %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        # Fail-safe: echo the original text so the diff overlay can still render
+        return RewriteResponse(
+            section=body.section,
+            old_text=body.old_text,
+            new_text=body.old_text,
+            predicted_score_increase=3,
+        )
