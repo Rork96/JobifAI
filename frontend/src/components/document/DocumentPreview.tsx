@@ -717,7 +717,7 @@ export const DocumentPreview: React.FC = () => {
           uploadedResumeText?.trim() ? (
             <div className="py-8 px-4">
               <motion.div
-                className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[794px] w-full overflow-hidden"
+                className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[21cm] w-full min-h-[29.7cm] text-black"
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ type: 'spring', stiffness: 260, damping: 22 }}
@@ -764,14 +764,14 @@ export const DocumentPreview: React.FC = () => {
           <div className="py-8 px-4 pb-12">
             {/* ── A4 Paper Sheet ─────────────────────────────────────────── */}
             <motion.div
-              className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[794px] w-full overflow-hidden"
+              className="bg-white rounded-sm border border-gray-200 shadow-lg mx-auto max-w-[21cm] w-full min-h-[29.7cm] text-black"
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: 'spring', stiffness: 260, damping: 22 }}
             >
               <div className="h-1 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-400" />
 
-              <div className="p-8 space-y-6">
+              <div className="p-12 space-y-6">
                 <motion.div
                   className="space-y-6"
                   initial="hidden"
@@ -835,7 +835,7 @@ export const DocumentPreview: React.FC = () => {
                               className="border-l-2 border-orange-400 pl-4 rounded-r-lg"
                             >
                               <div className="flex items-start justify-between gap-4">
-                                <div>
+                                <div className="flex-1 min-w-0">
                                   <p className="text-sm font-semibold text-gray-900">{exp.title}</p>
                                   <p className="text-xs font-medium text-orange-600 mt-0.5">{exp.company}</p>
                                 </div>

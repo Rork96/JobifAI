@@ -433,7 +433,7 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                         setShowAuthModal(false);
                         await auth.signInWithGoogle();
                       }}
-                      className="w-full flex items-center justify-center gap-2.5 bg-white hover:bg-gray-50 text-slate-800 font-semibold text-sm py-3 rounded-xl transition-colors shadow-sm"
+                      className="w-full flex items-center justify-center gap-2.5 bg-white hover:bg-gray-50 text-slate-800 font-semibold text-base py-4 rounded-xl transition-colors border border-gray-200 shadow-md"
                     >
                       {/* Google "G" icon */}
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">

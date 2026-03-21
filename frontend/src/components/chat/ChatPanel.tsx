@@ -411,9 +411,34 @@ export const ChatPanel: React.FC = () => {
       const hasResumeData = rd && Object.values(rd).some((v) => v !== null && v !== undefined && v !== '');
       const hasContext    = !!(hasResumeData || jd?.trim() || rawResume?.trim());
 
-      const greetingMessage = hasContext
-        ? `I've uploaded my resume${jd ? ' and a target job description' : ''}. Please analyze the key gaps and tell me what to improve first.${rawResume ? `\n\nResume text:\n${rawResume.slice(0, 3000)}` : ''}`
-        : 'hi';
+      let greetingMessage: string;
+      if (rawResume?.trim() && jd?.trim()) {
+        // Both resume + JD — ask Mac to analyze gaps immediately
+        greetingMessage =
+          `The user has provided their current resume and a target job description. ` +
+          `Analyze the key skill and experience gaps, then tell them the top 3 things to improve first. ` +
+          `Be specific and actionable.\n\n` +
+          `RESUME:\n${rawResume.slice(0, 3000)}\n\n` +
+          `JOB DESCRIPTION:\n${jd.slice(0, 1500)}`;
+      } else if (jd?.trim()) {
+        // JD only (scratch mode) — start interviewing for that role
+        greetingMessage =
+          `The user wants to build a resume for this job. Start the interview to collect their experience. ` +
+          `Ask for their most recent relevant role first.\n\n` +
+          `JOB DESCRIPTION:\n${jd.slice(0, 1500)}`;
+      } else if (rawResume?.trim()) {
+        // Resume only — analyze it
+        greetingMessage =
+          `The user has uploaded their resume. Analyze it and suggest the top improvements, ` +
+          `then ask what type of role they are targeting.\n\n` +
+          `RESUME:\n${rawResume.slice(0, 3000)}`;
+      } else if (hasResumeData) {
+        // Structured resume data exists — offer to improve
+        greetingMessage =
+          `I've uploaded my resume. Please review it and suggest what to improve first.`;
+      } else {
+        greetingMessage = 'hi';
+      }
 
       let accumulated = '';
       let finished    = false;
