@@ -407,6 +407,20 @@ export const ChatPanel: React.FC = () => {
       if (useAppStore.getState().messages.length > 0) return;
       hasGreetedRef.current = true;
 
+      // ── Short-circuit: if analysis has already run, emit the stored Mac message
+      // directly instead of making an API round-trip that produces a duplicate.
+      // This fixes the double-message bug where analysisResult.macMessage is set
+      // in the store but never surfaced to the messages[] array.
+      const existingAnalysis = useAppStore.getState().analysisResult;
+      if (existingAnalysis !== null) {
+        const directMsg =
+          existingAnalysis.score === 100
+            ? `✨ **Stellar work!** Your resume is a **100% match** for this role.\n\nLet's focus on polishing the tone or adding metrics that make you stand out. Click any bullet to start editing, or try the ⭐ bonus keywords to get ahead of the pack.`
+            : (existingAnalysis.macMessage ?? `Your resume scored **${existingAnalysis.score}%**. Let's close those gaps — click any dashed keyword to get started.`);
+        useAppStore.getState().addMessage({ role: 'assistant', content: directMsg });
+        return;
+      }
+
       setIsGenerating(true);
       setStreamingContent('');
 

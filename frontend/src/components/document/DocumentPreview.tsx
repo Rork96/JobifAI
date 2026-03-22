@@ -49,6 +49,39 @@ import { initAudioContext, playCheckSound, playAcceptSound } from '@/utils/audio
 import type { ResumeData } from '@/types';
 import { StandardA4Layout } from './StandardA4Layout';
 
+// ── Bonus keyword pools (used when score is 100% — ghost gaps for elite polish) ─
+const BONUS_POOLS: Record<string, string[]> = {
+  cloud:    ['FinOps', 'Chaos Engineering', 'SRE Practices', 'Multi-region HA', 'Zero-downtime Deployments'],
+  frontend: ['Core Web Vitals', 'WCAG Accessibility', 'Design Systems', 'Bundle Optimization', 'SSR/SSG'],
+  backend:  ['API Gateway', 'Event-Driven Architecture', 'Database Sharding', 'Rate Limiting', 'OpenAPI/Swagger'],
+  data:     ['MLOps', 'Feature Engineering', 'Data Governance', 'A/B Testing', 'Real-time Pipelines'],
+  devops:   ['GitOps', 'Observability', 'Incident Response', 'Capacity Planning', 'SLO/SLA Management'],
+  default:  ['Technical Mentoring', 'Cross-functional Leadership', 'Stakeholder Management', 'Technical Documentation', 'Code Review Culture'],
+};
+
+const _CLOUD_KW    = ['aws', 'azure', 'gcp', 'cloud', 'kubernetes', 'k8s', 'terraform'];
+const _FRONTEND_KW = ['react', 'vue', 'angular', 'typescript', 'css', 'tailwind', 'ui', 'frontend'];
+const _BACKEND_KW  = ['node', 'python', 'java', 'api', 'rest', 'graphql', 'microservices', 'backend'];
+const _DATA_KW     = ['sql', 'spark', 'ml', 'machine learning', 'data', 'analytics', 'bi', 'tableau'];
+const _DEVOPS_KW   = ['ci/cd', 'docker', 'jenkins', 'github actions', 'monitoring', 'devops', 'sre'];
+
+function deriveBonusKeywords(foundKeywords: string[], existingSkills: string[]): string[] {
+  const found  = foundKeywords.map((k) => k.toLowerCase());
+  const skills = existingSkills.map((s) => s.toLowerCase());
+  const all    = [...found, ...skills];
+
+  let category = 'default';
+  if (_CLOUD_KW.some((k)    => all.some((a) => a.includes(k)))) category = 'cloud';
+  else if (_DEVOPS_KW.some((k)  => all.some((a) => a.includes(k)))) category = 'devops';
+  else if (_FRONTEND_KW.some((k) => all.some((a) => a.includes(k)))) category = 'frontend';
+  else if (_BACKEND_KW.some((k)  => all.some((a) => a.includes(k)))) category = 'backend';
+  else if (_DATA_KW.some((k)    => all.some((a) => a.includes(k)))) category = 'data';
+
+  const pool = BONUS_POOLS[category] ?? BONUS_POOLS.default;
+  const existingSet = new Set([...found, ...skills]);
+  return pool.filter((kw) => !existingSet.has(kw.toLowerCase())).slice(0, 5);
+}
+
 // ── Deterministic gap value (3–7%) per keyword ────────────────────────────────
 function getGapValue(gap: string): number {
   let h = 0;
@@ -570,9 +603,19 @@ export const DocumentPreview: React.FC = () => {
   //   2. `missingKeywords` must be a real array (defensive against bad API shapes)
   //   3. Each keyword must be a non-empty string
   //   4. Case-insensitive deduplicate against the current skills list
+  // ghostKeywords: real missing keywords, OR bonus keywords when score is 100%
   const ghostKeywords: string[] = (() => {
-    const missing = analysisResult?.missingKeywords;
-    if (!Array.isArray(missing) || missing.length === 0) return [];
+    if (analysisResult === null) return [];
+
+    const missing = analysisResult.missingKeywords;
+
+    // 100% match — inject "Stand out further" bonus gaps instead
+    if (!Array.isArray(missing) || missing.length === 0) {
+      return deriveBonusKeywords(
+        analysisResult.foundKeywords ?? [],
+        (resumeData.skills ?? []).filter((s): s is string => typeof s === 'string'),
+      );
+    }
 
     const existingLower = new Set(
       (resumeData.skills ?? [])
@@ -587,6 +630,12 @@ export const DocumentPreview: React.FC = () => {
         !existingLower.has(k.toLowerCase()),
     );
   })();
+
+  // True when score is 100 and we're showing enhancement suggestions instead of gaps
+  const isBonusMode = analysisResult !== null &&
+    Array.isArray(analysisResult.missingKeywords) &&
+    analysisResult.missingKeywords.length === 0 &&
+    ghostKeywords.length > 0;
   const jobDescription     = useAppStore((s) => s.jobDescription);
   const setPendingDiff     = useAppStore((s) => s.setPendingDiff);
 
@@ -640,6 +689,10 @@ export const DocumentPreview: React.FC = () => {
   const hasContent = Object.values(resumeData).some((v) =>
     v !== undefined && v !== '' && (Array.isArray(v) ? v.length > 0 : true),
   );
+  // Show the interactive layout when resumeData has content OR when analysis
+  // has run (analysisResult is non-null) — this fixes the 100% score case where
+  // resumeData may be partially populated but still has a full analysis result.
+  const showLayout = hasContent || analysisResult !== null;
 
   // ── Highlight-flash tracking ───────────────────────────────────────────────
   const seenIdsRef  = useRef<Set<string>>(new Set());
@@ -690,6 +743,7 @@ export const DocumentPreview: React.FC = () => {
       });
     } catch (err) {
       console.error('[Magic Rewrite] failed:', err);
+      setPremiumToast('✨ Magic Rewrite failed — please try again in a moment.');
     }
   }, [jobDescription, resumeData, setPendingDiff]);
 
@@ -749,7 +803,7 @@ export const DocumentPreview: React.FC = () => {
            • Legacy path     — old skillGaps or matchedSkills arrays have content
           hasContent guard keeps it hidden on the blank "start chatting" placeholder. */}
       <AnimatePresence>
-        {(analysisResult !== null || skillGaps.length > 0 || matchedSkills.length > 0) && hasContent && (
+        {(analysisResult !== null || skillGaps.length > 0 || matchedSkills.length > 0) && showLayout && (
           <SkillGapChecklist
             key="skill-gaps"
             gaps={skillGaps}
@@ -766,7 +820,7 @@ export const DocumentPreview: React.FC = () => {
       {/* ── Scrollable resume content ─────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto scrollbar-hidden">
 
-        {!hasContent ? (
+        {!showLayout ? (
           uploadedResumeText?.trim() ? (
             <div className="py-8 px-4">
               <motion.div
@@ -818,6 +872,7 @@ export const DocumentPreview: React.FC = () => {
             <StandardA4Layout
               resumeData={resumeData}
               ghostKeywords={ghostKeywords}
+              bonusMode={isBonusMode}
               flashingIds={flashingIds}
               isUnlocked={isUnlocked}
               userEmail={userEmail}

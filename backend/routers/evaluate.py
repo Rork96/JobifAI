@@ -414,22 +414,18 @@ async def rewrite_section(
     """
     genai.configure(api_key=settings.gemini_api_key)
 
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=_REWRITE_SYSTEM,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.4,
-            top_p=0.95,
-            max_output_tokens=512,
-            response_mime_type="application/json",  # force clean JSON, no fences, no preamble
-        ),
-        safety_settings={
-            HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
+    _rewrite_gen_config = genai.types.GenerationConfig(
+        temperature=0.4,
+        top_p=0.95,
+        max_output_tokens=512,
+        response_mime_type="application/json",  # force clean JSON, no fences, no preamble
     )
+    _rewrite_safety = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    }
 
     jd_section = ""
     if body.job_description.strip():
@@ -448,7 +444,14 @@ async def rewrite_section(
     )
 
     try:
-        response = await model.generate_content_async(prompt)
+        _model_used, response = await _generate_with_model_fallback(
+            model_priority=_ANALYZE_MODEL_PRIORITY,
+            system_instruction=_REWRITE_SYSTEM,
+            generation_config=_rewrite_gen_config,
+            safety_settings=_rewrite_safety,
+            prompt=prompt,
+        )
+        logger.info("Rewrite using model=%s", _model_used)
         raw = _extract_response_text(response)
         raw = _strip_fences(raw)
 

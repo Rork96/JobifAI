@@ -31,6 +31,8 @@ function fmtDate(iso: string | null | undefined): string {
 export interface StandardA4LayoutProps {
   resumeData:    Partial<ResumeData>;
   ghostKeywords: string[];
+  /** When true, ghost gaps are "Stand out further" bonus keywords (100% score) */
+  bonusMode?:    boolean;
   flashingIds:   Set<string>;
   isUnlocked:    boolean;
   userEmail?:    string | null;
@@ -341,6 +343,7 @@ const PaperExpEntry: React.FC<PaperExpEntryProps> = ({
 export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
   resumeData,
   ghostKeywords,
+  bonusMode = false,
   flashingIds,
   isUnlocked,
   userEmail,
@@ -454,7 +457,9 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
             {/* Ghost gaps row — below all entries, inside Experience section */}
             {ghostKeywords.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="text-[11px] text-gray-400 italic">Consider adding:</span>
+                <span className={`text-[11px] italic ${bonusMode ? 'text-emerald-500' : 'text-gray-400'}`}>
+                  {bonusMode ? '⭐ Stand out further:' : 'Consider adding:'}
+                </span>
                 {ghostKeywords.slice(0, 5).map((kw) => (
                   <GhostWord key={kw} keyword={kw} onClick={onGhostClick} />
                 ))}
