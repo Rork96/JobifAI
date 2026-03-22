@@ -233,13 +233,14 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
   // ── Score-based colour helpers ─────────────────────────────────────────────
   const displayScore    = onboardingMode === 'scratch' ? scoreCount : (apiScore ?? scoreCount);
+  // Score colour system — Danger / Warning / Success (matches global spec)
   const scoreColorClass =
-    displayScore < 50  ? 'text-red-400' :
-    displayScore <= 80 ? 'text-amber-400' :
+    displayScore < 40  ? 'text-red-400' :
+    displayScore < 70  ? 'text-amber-400' :
                          'text-emerald-400';
   const scoreLabelClass =
-    displayScore < 50  ? 'text-red-400' :
-    displayScore <= 80 ? 'text-amber-400' :
+    displayScore < 40  ? 'text-red-400' :
+    displayScore < 70  ? 'text-amber-400' :
                          'text-emerald-400';
 
   // ── Mascot state ───────────────────────────────────────────────────────────
@@ -248,9 +249,9 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     (isParsingFile || isParsingJob || isAnalyzing)                ? 'processing' :
     step === 3 && !scanComplete                                    ? 'processing' :
     step === 3 && scanComplete && onboardingMode !== 'scratch' && apiScore === null ? 'processing' :
-    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore < 50  ? 'shocked' :
-    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore <= 80 ? 'processing' :
-    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore > 80  ? 'success' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore < 40  ? 'shocked' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore < 70  ? 'processing' :
+    step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore >= 70 ? 'success' :
     step === 3 && scanComplete && onboardingMode === 'scratch'                        ? 'success' :
     'idle';
 

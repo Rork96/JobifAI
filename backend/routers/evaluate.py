@@ -541,9 +541,11 @@ Field rules:
 - missingKeywords: up to 12 JD keywords absent from the resume. Most impactful first. Empty list [] if none.
 - contextualMatches: synonym pairs only (e.g. "Postgres" vs "PostgreSQL"). Empty list [] if none.
 - macMessage: 2-3 sentences maximum.
+  * score < 40 → blunt, urgent: "Your resume is currently invisible to ATS (X/100). We are missing critical keywords: [top 3]. Click the ghost words in the preview to start fixing this." Use exactly this structure.
+  * score 40-69 → direct and action-oriented: cite exact score, name top 2-3 missing keywords, say we will fix them.
+  * score 70-89 → encouraging but specific: cite exact score, name remaining 1-2 gaps, frame as "almost there".
   * score >= 90 OR missingKeywords is empty → congratulate, cite exact score as "X/100", pivot to polishing (stronger verbs, metrics, PDF). Do NOT mention gaps.
-  * Otherwise → cite exact score as "X/100", name the top 2-3 missing keywords, be direct and encouraging. Do NOT use generic openers.
-  * Never invent facts not in the documents.
+  * Never invent facts not in the documents. Never use generic openers like "Great news" or "Let me help".
 """
 
 
@@ -964,25 +966,46 @@ async def analyze(
 
         mac_msg = str(result.get("macMessage", "")).strip()
         if not mac_msg:
+            top_gaps = ", ".join(missing_kw[:3]) if missing_kw else "a few key skills"
             is_polishing = score >= 90 or len(missing_kw) == 0
             if is_polishing:
+                # 90–100 or perfect match
                 mac_msg = (
                     f"Your resume is already a strong match at {score}/100 — "
                     "you have the core keywords covered.  "
                     "Now let's sharpen the achievement metrics and action verbs to make it outstanding."
                 )
-            else:
-                top_gaps = ", ".join(missing_kw[:3]) if missing_kw else "a few key skills"
+            elif score < 40:
+                # Danger zone — blunt, urgent
+                mac_msg = (
+                    f"Your resume is currently invisible to ATS ({score}/100).  "
+                    f"We are missing critical keywords: {top_gaps}.  "
+                    "Click the ghost words in the preview to start fixing this."
+                )
+            elif score < 70:
+                # Improvement zone — direct and action-oriented
                 mac_msg = (
                     f"Your ATS score is {score}/100 — {top_gaps} "
                     "are the main gaps between you and the shortlist.  "
                     "Let's work those in and I'll show you exactly where each one fits."
                 )
+            else:
+                # Strong zone (70–89) — encouraging but specific
+                mac_msg = (
+                    f"Strong resume at {score}/100 — almost there.  "
+                    f"Adding {top_gaps} would push you past the shortlist threshold.  "
+                    "Click any ghost keyword to get a tailored bullet suggestion."
+                )
 
+        strategy = (
+            "polishing"     if (score >= 90 or len(missing_kw) == 0) else
+            "danger"        if score < 40 else
+            "improvement"   if score < 70 else
+            "strong"
+        )
         logger.info(
             "Analyze ✅ — model=%s  score=%d  found=%d  missing=%d  ctx=%d  strategy=%s",
-            model_used, score, len(found_kw), len(missing_kw), len(ctx_matches),
-            "polishing" if (score >= 90 or len(missing_kw) == 0) else "gap-analysis",
+            model_used, score, len(found_kw), len(missing_kw), len(ctx_matches), strategy,
         )
 
         return AnalyzeResponse(

@@ -108,6 +108,9 @@ const EditableBullet: React.FC<EditableBulletProps> = ({
         },
       }));
       applyDiff();
+      // Trigger background ATS re-evaluation after a manual bullet edit so
+      // the score ring reflects the updated resume immediately.
+      window.dispatchEvent(new CustomEvent('jobifai:bgEval'));
     }
     setIsEditing(false);
   }, [editValue, text, fieldPath, applyDiff]);

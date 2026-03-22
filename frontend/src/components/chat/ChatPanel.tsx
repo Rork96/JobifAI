@@ -213,6 +213,12 @@ export const ChatPanel: React.FC = () => {
   const [isWarning,        setIsWarning]        = useState(false);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Ghost keyword auto-send flag ─────────────────────────────────────────────
+  // Set to true when a ghost word is clicked in the resume preview.  A separate
+  // useEffect (declared AFTER handleSend) watches this flag and fires handleSend
+  // once React has flushed the inputValue state update.
+  const [ghostAutoSend, setGhostAutoSend] = useState(false);
+
   // ── Refs ────────────────────────────────────────────────────────────────────
   // AbortController cancels the in-flight fetch on unmount or new request.
   const abortRef = useRef<AbortController | null>(null);
@@ -355,6 +361,51 @@ export const ChatPanel: React.FC = () => {
     };
     window.addEventListener('jobifai:insertSkill', handler);
     return () => window.removeEventListener('jobifai:insertSkill', handler);
+  }, []);
+
+  // ── Ghost keyword click → auto-submit ─────────────────────────────────────
+  // When a dashed ghost word is clicked in StandardA4Layout, DocumentPreview
+  // dispatches 'jobifai:ghostKeyword' with a pre-formed coaching message.
+  // Here we set inputValue to that message and raise the ghostAutoSend flag.
+  // The actual handleSend() call lives in a separate useEffect declared after
+  // handleSend is defined — preventing a forward-reference ReferenceError.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { message } = (e as CustomEvent<{ message: string }>).detail;
+      setInputValue(message);
+      setGhostAutoSend(true);
+    };
+    window.addEventListener('jobifai:ghostKeyword', handler);
+    return () => window.removeEventListener('jobifai:ghostKeyword', handler);
+  }, []);
+
+  // ── Background ATS re-evaluation (Magic Rewrite accept / manual edits) ────
+  // DiffView and EditableBullet dispatch 'jobifai:bgEval' after committing a
+  // change.  We silently re-call /api/analyze so the score ring turns green
+  // live — no mode restriction (works in both scratch and optimize modes).
+  useEffect(() => {
+    const handler = async () => {
+      const st = useAppStore.getState();
+      const rdJson = JSON.stringify(st.resumeData);
+      if (rdJson === '{}' || !st.jobDescription.trim()) return;
+      try {
+        const r = await fetch('/api/analyze', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            resume_text:     rdJson,
+            job_description: st.jobDescription,
+          }),
+        });
+        if (!r.ok) return;
+        const d = await r.json() as { score?: number };
+        if (typeof d.score === 'number') {
+          useAppStore.getState().setAtsScore(Math.min(100, d.score));
+        }
+      } catch { /* silent — never surface a background eval error */ }
+    };
+    window.addEventListener('jobifai:bgEval', handler as EventListener);
+    return () => window.removeEventListener('jobifai:bgEval', handler as EventListener);
   }, []);
 
   // ── Autogrow textarea ─────────────────────────────────────────────────────
@@ -852,6 +903,20 @@ export const ChatPanel: React.FC = () => {
       cleanup();
     }
   };
+
+  // ── Ghost keyword auto-submit (must follow handleSend declaration) ──────────
+  // When ghostAutoSend becomes true, inputValue has already been set to the
+  // coaching message.  React batches both state updates from the event handler,
+  // so by the time this effect fires, inputValue === the ghost message and
+  // handleSend (which reads inputValue) will submit the correct text.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!ghostAutoSend) return;
+    setGhostAutoSend(false);
+    const t = setTimeout(handleSend, 0);  // tick 0 ensures React has flushed state
+    return () => clearTimeout(t);
+  // handleSend is intentionally in deps — rebuilt when inputValue changes
+  }, [ghostAutoSend, handleSend]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

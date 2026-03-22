@@ -129,7 +129,8 @@ function useAnimatedCounter(target: number | null, duration = 700): number | nul
 // ── ATS Score Ring ────────────────────────────────────────────────────────────
 /**
  * Circular progress ring with animated counter.
- * Ring colour: green (≥75), orange (50–74), red (<50).
+ * Ring colour: green (≥70), orange (40–69), red (<40).
+ * Matches the universal score-color system: Danger / Warning / Success.
  */
 const AtsScoreRing: React.FC<{ score: number | null }> = ({ score }) => {
   const animated = useAnimatedCounter(score);
@@ -137,7 +138,7 @@ const AtsScoreRing: React.FC<{ score: number | null }> = ({ score }) => {
   if (animated === null) return null;
 
   const pct   = Math.min(100, Math.max(0, animated));
-  const color = pct >= 75 ? '#34d399' : pct >= 50 ? '#fb923c' : '#f87171';
+  const color = pct >= 70 ? '#34d399' : pct >= 40 ? '#fb923c' : '#f87171';
 
   // SVG circle: circumference = 2π × r = 2π × 14 ≈ 87.96
   const r    = 14;
@@ -181,18 +182,17 @@ function dispatchInsertSkill(gap: string) {
 }
 
 /**
- * Dispatches a guided coaching prompt into the chat input when a ghost keyword
- * is clicked.  The prompt instructs the user to surface a real-world example
- * rather than blindly inserting the keyword — preserving resume authenticity.
+ * Auto-sends a tailored coaching request when a ghost keyword is clicked.
  *
- * Uses the same `jobifai:insertSkill` event channel as the checklist chips so
- * ChatPanel only needs one listener.
+ * Uses the `jobifai:ghostKeyword` event channel (separate from the checklist
+ * chip channel) so ChatPanel can auto-submit rather than just populate the
+ * input.  Mac receives a targeted prompt and responds with a bullet suggestion.
  */
 function dispatchGhostKeywordPrompt(keyword: string): void {
   window.dispatchEvent(
-    new CustomEvent('jobifai:insertSkill', {
+    new CustomEvent('jobifai:ghostKeyword', {
       detail: {
-        gap: `I see that '${keyword}' is a missing keyword. Can you help me find a specific example from my experience to include it?`,
+        message: `Help me integrate the missing keyword "${keyword}" into my professional experience.`,
       },
     }),
   );
@@ -484,6 +484,9 @@ const DiffView: React.FC<{ diff: DiffProposal }> = ({ diff }) => {
         navigator.vibrate([50]);
       }
     }
+    // Trigger a background ATS re-evaluation so the score ring updates live
+    // after the Magic Rewrite is committed — no mode restriction.
+    window.dispatchEvent(new CustomEvent('jobifai:bgEval'));
   }, [applyDiff, bumpAtsScore, diff.predictedScoreIncrease]);
 
   const handleReject = useCallback(() => {

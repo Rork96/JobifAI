@@ -235,19 +235,19 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
           <div className="px-8 pt-8 pb-6 text-center border-b border-slate-800">
             {/* ATS score pill */}
             <div className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-5 ${
-              currentAtsScore >= 80
+              currentAtsScore >= 70
                 ? 'bg-emerald-500/15 border border-emerald-500/30'
-                : currentAtsScore >= 50
+                : currentAtsScore >= 40
                   ? 'bg-amber-500/15 border border-amber-500/30'
                   : 'bg-red-500/15 border border-red-500/30'
             }`}>
               <span className={`w-2 h-2 rounded-full animate-pulse ${
-                currentAtsScore >= 80 ? 'bg-emerald-500' : currentAtsScore >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                currentAtsScore >= 70 ? 'bg-emerald-500' : currentAtsScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
               }`} />
               <span className={`text-xs font-semibold tracking-wide uppercase ${
-                currentAtsScore >= 80 ? 'text-emerald-400' : currentAtsScore >= 50 ? 'text-amber-400' : 'text-red-400'
+                currentAtsScore >= 70 ? 'text-emerald-400' : currentAtsScore >= 40 ? 'text-amber-400' : 'text-red-400'
               }`}>
-                ATS Score: {currentAtsScore} / 100 — {currentAtsScore < 50 ? 'Below hiring threshold' : currentAtsScore <= 80 ? 'Needs improvement' : 'Strong match'}
+                ATS Score: {currentAtsScore} / 100 — {currentAtsScore < 40 ? 'Invisible to ATS' : currentAtsScore < 70 ? 'Needs improvement' : 'Strong match'}
               </span>
             </div>
 
