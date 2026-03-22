@@ -1,71 +1,67 @@
 /**
- * components/document/ResumePDF.tsx — ATS-Compliant PDF Generator
+ * components/document/ResumePDF.tsx — Standard Canadian ATS-Compliant PDF
  * ─────────────────────────────────────────────────────────────────────────────
- * Generates a strictly professional, single-column Canadian résumé PDF using
- * @react-pdf/renderer.  The design philosophy is deliberately "boring" — it
- * must look like it came out of a 1992 HP LaserJet.  That's the point.
- *
- * ATS COMPLIANCE RULES (enforced here):
+ * ARCHITECTURAL BOUNDARY
  * ─────────────────────────────────────────────────────────────────────────────
- *   ✓  Pure text layer — no rasterised images, no bitmapped icons, no SVGs.
- *      Every character in this PDF is selectable and copy-pasteable.
+ * This is a PURE PRESENTER component. It receives `data: Partial<ResumeData>`
+ * from the caller (DocumentPreview or a PDFDownloadLink wrapper) and renders
+ * a PDF document. It has no knowledge of Zustand, routing, or API calls.
  *
- *   ✓  Standard built-in fonts only — Helvetica, Helvetica-Bold, Helvetica-Oblique.
- *      These are embedded in every PDF reader since 1984 and require zero font
- *      embedding.  Custom fonts add binary blobs and confuse old ATS parsers.
+ * Callers pull state from the store themselves:
+ *   const resumeData = useAppStore(s => s.resumeData);
+ *   <PDFDownloadLink document={<ResumePDF data={resumeData} />} ...>
  *
- *   ✓  No word hyphenation — hyphens break keyword matching.  "Kubernetes" split
- *      across a line becomes "Kube-\nnetes" — an ATS miss.  We suppress all
- *      automatic hyphenation via the Document-level hyphenationCallback.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DELIBERATE "BORING" DESIGN — WHY IT MATTERS FOR ATS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Modern ATS systems (Taleo, Workday, Greenhouse, iCIMS) extract resume text
+ * by reading the raw PDF text layer — they do NOT render the visual layout.
+ * Anything that looks decorative but breaks the text layer kills the candidacy.
  *
- *   ✓  Single column, left-aligned body — multi-column layouts are parsed
- *      left-to-right in reading order, which scrambles two-column résumés
- *      in many ATS systems (Taleo, Workday, Greenhouse).
+ * Rules enforced here:
  *
- *   ✓  Bullet points as Unicode "•" prefix text — native PDF list elements
- *      (`<ul>`, `<li>`) don't exist in PDF primitives; some ATS parsers only
- *      handle plain text bullets.  The Unicode bullet (U+2022) is universally
- *      safe and renders identically across all PDF viewers.
+ *   ✓  Standard PDF built-in fonts only (Helvetica / Times-Roman).
+ *      Custom fonts embed binary blobs and trip ATS binary-content filters.
+ *      PDF built-ins are guaranteed in every reader since 1984, zero embedding.
  *
- *   ✓  No colour except near-black (#111111) on white (#FFFFFF).
- *      Coloured text boxes, gradients, or tinted backgrounds cause OCR errors
- *      on scanned versions and confuse some ATS optical character recognition.
+ *   ✓  Hyphenation disabled globally via Font.registerHyphenationCallback.
+ *      A hyphenated "Kube-\nnetes" is an ATS keyword miss. No exceptions.
  *
- *   ✓  Dates as "MMM YYYY" (e.g. "Apr 2023") — ISO dates confuse parsers that
- *      expect month names; fully numeric dates (04/2023) are ambiguous between
- *      DD/MM and MM/DD.  Month abbreviation + year is the unambiguous standard.
+ *   ✓  Single-column layout. Multi-column PDFs are read left-to-right by ATS
+ *      parsers, scrambling the content (company name mixes with job title, etc).
  *
- *   ✓  wrap={false} on each experience entry — keeps Title + Company + Bullets
- *      together on the same page.  Splitting one job across pages is the #1
- *      layout complaint from Canadian recruiters.
+ *   ✓  Pure text bullets using Unicode "•" (U+2022) prefix strings.
+ *      PDF has no native list primitives; some ATS parsers only handle plain text.
  *
- *   ✓  Skills as a flat comma-separated sentence — bordered pill badges and
- *      tag clouds look pretty but are unparseable by many ATS systems that
- *      look for skills in plain-text lines, not in styled boxes.
+ *   ✓  Skills as a flat comma-separated sentence, not bordered pills or chips.
+ *      Pill/chip elements are CSS/HTML conventions with no PDF text equivalent.
  *
- *   ✓  Metrics merged into the main bullet list — coloured achievement "badges"
- *      have no semantic meaning in a PDF text layer.  Plain bullets with strong
- *      action verbs carry the same information and are fully parseable.
+ *   ✓  Near-black (#111111) on white (#FFFFFF). Coloured boxes and gradients
+ *      cause OCR errors on scanned versions and confuse some ATS optical readers.
  *
- * TYPOGRAPHY (Canadian HR standards):
- *   Name:            20pt  Helvetica-Bold    (left-aligned)
+ *   ✓  Dates as "MMM YYYY" — unambiguous across DD/MM and MM/DD conventions.
+ *
+ *   ✓  wrap={false} on experience entries — never splits one job across pages.
+ *
+ *   ✓  PDF metadata (title, author, subject, keywords) populated for pre-indexing.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TYPOGRAPHY (exact spec)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   Name:            18pt  Helvetica-Bold    (per Canadian HR standard spec)
+ *   Target title:    11pt  Helvetica         (directly below name)
  *   Contact line:    10pt  Helvetica         (City, Prov | Phone | Email | LinkedIn)
- *   Section headers: 12pt  Helvetica-Bold    ALL CAPS + horizontal rule
+ *   Section headers: 12pt  Helvetica-Bold    ALL CAPS + full-width hairline rule
  *   Job title:       11pt  Helvetica-Bold
- *   Company/dates:   10pt  Helvetica / Helvetica-Oblique
- *   Body text:       10pt  Helvetica         (bullets, summary, education)
- *   Footer:           7pt  Helvetica         (page numbers)
+ *   Company / dates: 10pt  Helvetica / Helvetica-Oblique
+ *   Body text:       10pt  Helvetica
+ *   Footer:           7pt  Helvetica
  *
- * USAGE (from DocumentPreview.tsx):
- *   const { pdf }       = await import('@react-pdf/renderer');
- *   const { ResumePDF } = await import('./ResumePDF');
- *   const blob = await pdf(
- *     <ResumePDF data={resumeData as ResumeData} userEmail={email} />
- *   ).toBlob();
+ * MARGINS: 1 inch (72pt) on all four sides. LETTER page (8.5 × 11 in).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React from 'react';
+import React                from 'react';
 import {
   Document,
   Font,
@@ -73,47 +69,53 @@ import {
   Text,
   View,
   StyleSheet,
-} from '@react-pdf/renderer';
-import type { ResumeData, ExperienceEntry, EducationEntry } from '@/types';
+}                           from '@react-pdf/renderer';
+import type {
+  ResumeData,
+  ExperienceEntry,
+  EducationEntry,
+}                           from '@/types';
 
 // ─── Hyphenation suppression ──────────────────────────────────────────────────
-// In @react-pdf/renderer v3, hyphenation is controlled via Font.registerHyphenationCallback.
-// Returning the word as a single-element array tells the engine the word must
-// never be split — preventing "Kubernetes" → "Kube-\nnetes" which breaks ATS
-// keyword matching.  Registered once at module load time (not inside a component).
+// Registered once at module load (not inside a component — safe for react-pdf).
+// Returning the word as a single-element array tells the layout engine:
+// "never break this word". Prevents "Kubernetes" → "Kube-\nnetes".
 Font.registerHyphenationCallback((word) => [word]);
 
-// ─── Props ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// PROPS
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface ResumePDFProps {
-  /** The structured resume data from the Zustand store. */
+  /** Structured resume data — pulled from useAppStore(s => s.resumeData) by the caller. */
   data: Partial<ResumeData>;
 
-  // ── Contact detail overrides ─────────────────────────────────────────────
-  // These are collected by the interview agent but stored separately from
-  // the core ResumeData structure.  All optional — the contact line is built
-  // from whatever is available and simply omits missing items.
+  // ── Optional contact fields ──────────────────────────────────────────────
+  // Collected during the interview and passed in by the caller.
+  // The contact line is built from whatever is provided; missing items are
+  // simply omitted rather than showing "null" or an empty slot.
 
-  /** Full legal name.  Falls back to targetTitle if absent. */
+  /** Full legal name. Falls back to targetTitle, then "Your Name". */
   name?:           string | null;
-  /** Authenticated user email address (passed from auth session). */
+  /** Authenticated user email (from Supabase auth session). */
   userEmail?:      string | null;
-  /** City and province, e.g. "Winnipeg, MB" or "Toronto, ON". */
+  /** "City, Province" — e.g. "Toronto, ON". */
   city?:           string | null;
-  /** Phone number, e.g. "(204) 555-0100". */
+  /** Phone number — e.g. "(416) 555-0100". */
   phone?:          string | null;
-  /** LinkedIn profile — short form preferred: "linkedin.com/in/username". */
+  /** LinkedIn URL — short form: "linkedin.com/in/username". */
   linkedIn?:       string | null;
-  /** Professional certifications, e.g. ["PMP", "AWS Solutions Architect"]. */
+  /** Professional certifications — rendered as a comma-separated line. */
   certifications?: string[];
 }
 
-// ─── Date helpers ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// DATE HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Convert ISO month string "2021-03" → "Mar 2021".
- * Falls back to the raw value unchanged if the format is not recognised.
- * This is intentional: if someone types "Spring 2020" it passes through as-is.
+ * "2021-03" → "Mar 2021"
+ * Passes through unrecognised strings unchanged (e.g. "Spring 2020").
  */
 function formatMonth(iso: string): string {
   const MONTHS = [
@@ -126,58 +128,81 @@ function formatMonth(iso: string): string {
   return label ? `${label} ${m[1]}` : iso;
 }
 
-/** Build the "Apr 2023 – Present" date range for one experience entry. */
+/** "Apr 2023 – Present"  (en-dash is the Canadian date-range standard) */
 function dateRange(entry: ExperienceEntry): string {
-  const start = formatMonth(entry.startDate);
+  const start = formatMonth(entry.startDate ?? '');
   const end   = entry.endDate ? formatMonth(entry.endDate) : 'Present';
-  return `${start} \u2013 ${end}`;   // en-dash (–) is the Canadian style
+  return `${start} \u2013 ${end}`;
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-// All measurements are in PDF POINTS (pt).  1 inch = 72 pt.
-// StyleSheet.create() validates the object at module load time.
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTACT LINE BUILDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Builds the single-line contact string.
+ * Items joined with " | " — the Canadian HR field-separator convention.
+ * Missing / empty items are silently excluded.
+ *
+ * Example: "Winnipeg, MB | (204) 555-0100 | jane@example.com | linkedin.com/in/jane"
+ */
+function buildContactLine(
+  city?:     string | null,
+  phone?:    string | null,
+  email?:    string | null,
+  linkedIn?: string | null,
+): string {
+  return [city, phone, email, linkedIn]
+    .filter((v): v is string => Boolean(v?.trim()))
+    .join(' | ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLESHEET
+// All measurements in PDF points (pt). 1 inch = 72 pt.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const S = StyleSheet.create({
 
   // ── Page ───────────────────────────────────────────────────────────────────
-  // LETTER (8.5 × 11 in) is the Canadian standard.  A4 is used in Europe.
-  // paddingBottom is 0.75 in (54 pt) so the footer has room without eating body.
+  // LETTER (8.5 × 11 in) — Canadian standard.
+  // All four paddings = 72pt (1 inch) per spec.
   page: {
     fontFamily:      'Helvetica',
     fontSize:        10,
     lineHeight:      1.45,
     color:           '#111111',
     backgroundColor: '#FFFFFF',
-    paddingTop:      72,           // 1 inch
-    paddingBottom:   54,           // 0.75 inch — footer clearance
-    paddingLeft:     72,           // 1 inch
-    paddingRight:    72,           // 1 inch
+    paddingTop:      72,   // 1 inch
+    paddingBottom:   72,   // 1 inch  ← spec requires 1 in on ALL sides
+    paddingLeft:     72,   // 1 inch
+    paddingRight:    72,   // 1 inch
   },
 
   // ── Header block ───────────────────────────────────────────────────────────
   header: {
-    marginBottom: 16,
+    marginBottom: 14,
   },
 
-  // 20pt Bold — the name is the largest element on the page, full stop.
+  // 18pt Bold — spec-exact. The candidate's name is the single most important
+  // element on the page for ATS pre-scoring.
   name: {
-    fontSize:    20,
-    fontFamily:  'Helvetica-Bold',
-    color:       '#000000',
-    marginBottom: 4,
+    fontSize:     18,               // ← spec: 18pt (not 20pt)
+    fontFamily:   'Helvetica-Bold',
+    color:        '#000000',
+    marginBottom: 3,
   },
 
-  // Job title sits directly under the name in regular weight.
-  // It is NOT part of the contact line — it anchors the reader's eye.
+  // Target job title — 11pt regular weight, directly below name.
+  // Anchors the reader's expectation before they scan the body.
   headerTitle: {
     fontSize:     11,
     color:        '#333333',
-    marginBottom: 4,
+    marginBottom: 3,
   },
 
-  // Single-line contact string: "Winnipeg, MB | (204) 555-0100 | email@example.com"
-  // Plain text — no flex tricks, no individual <Text> nodes per item.
-  // ATS parsers read this as one contiguous string, which is correct.
+  // Single-line contact string rendered as one <Text> node.
+  // One contiguous string = one parseable data item in the ATS text layer.
   contactLine: {
     fontSize:   10,
     color:      '#444444',
@@ -185,32 +210,32 @@ const S = StyleSheet.create({
   },
 
   // ── Section heading ────────────────────────────────────────────────────────
-  // 12pt, Bold, ALL CAPS per Canadian HR convention.
-  // The horizontal rule below each heading is a 0.75pt grey line.
+  // 12pt Bold ALL CAPS + full-width 0.75pt hairline rule.
+  // The rule is a zero-height View with backgroundColor — react-pdf's
+  // border-bottom equivalent (border-bottom is not a valid PDF style).
   sectionHeader: {
     flexDirection: 'row',
     alignItems:    'center',
     marginBottom:  5,
-    marginTop:     2,
+    marginTop:     12,
   },
   sectionTitle: {
-    fontSize:      12,
-    fontFamily:    'Helvetica-Bold',
+    fontSize:      12,               // spec: 12pt
+    fontFamily:    'Helvetica-Bold', // spec: BOLD
     color:         '#000000',
-    textTransform: 'uppercase',
+    textTransform: 'uppercase',      // spec: ALL CAPS
     marginRight:   8,
-    // No letter-spacing — some ATS parsers treat letter-spaced text as individual
-    // characters ("K U B E R N E T E S") rather than a keyword.
+    // No letterSpacing — spaced characters ("K U B E R N E T E S") break ATS keyword matching
   },
   sectionRule: {
     flex:            1,
-    height:          0.75,
-    backgroundColor: '#BBBBBB',
+    height:          0.75,           // hairline — purely visual, not a ghost gap
+    backgroundColor: '#CCCCCC',
   },
 
   // ── Section wrapper ────────────────────────────────────────────────────────
   section: {
-    marginBottom: 12,
+    marginBottom: 0,  // spacing handled by sectionHeader marginTop instead
   },
 
   // ── Professional Summary ───────────────────────────────────────────────────
@@ -221,11 +246,8 @@ const S = StyleSheet.create({
   },
 
   // ── Work Experience ────────────────────────────────────────────────────────
-  // wrap={false} on expEntry keeps the entire block on one page.
-  // If a single job overflows a page on its own, react-pdf will start it on
-  // a fresh page rather than splitting mid-block.
   expEntry: {
-    marginBottom: 10,
+    marginBottom: 9,
   },
   expTitleRow: {
     flexDirection:  'row',
@@ -253,9 +275,8 @@ const S = StyleSheet.create({
   },
 
   // ── Bullet points ──────────────────────────────────────────────────────────
-  // Flex row keeps the "•" dot fixed-width and left-aligned even when the text
-  // wraps to a second line — the continuation aligns under the first word,
-  // not under the bullet character.
+  // Flex row: fixed-width "•" dot + flex text block.
+  // Continuation lines align under the first word of the text, not the dot.
   bullet: {
     flexDirection: 'row',
     marginBottom:  2,
@@ -264,7 +285,7 @@ const S = StyleSheet.create({
   bulletDot: {
     fontSize:    10,
     color:       '#555555',
-    marginRight: 6,
+    marginRight: 5,
     lineHeight:  1.45,
     width:       8,
     flexShrink:  0,
@@ -277,9 +298,8 @@ const S = StyleSheet.create({
   },
 
   // ── Skills ─────────────────────────────────────────────────────────────────
-  // Plain comma-separated text — the most ATS-safe approach.
-  // Bordered pills, flex-wrap chip arrays, and tag clouds are decorative HTML
-  // conventions that have no equivalent in the PDF text layer.
+  // Plain comma-separated sentence — the spec-required format.
+  // No pill badges, no tag clouds, no flex-wrap chip arrays.
   skillsText: {
     fontSize:   10,
     color:      '#111111',
@@ -288,7 +308,7 @@ const S = StyleSheet.create({
 
   // ── Education ──────────────────────────────────────────────────────────────
   eduEntry: {
-    marginBottom: 8,
+    marginBottom: 7,
   },
   eduTitleRow: {
     flexDirection:  'row',
@@ -328,34 +348,30 @@ const S = StyleSheet.create({
   },
 
   // ── Footer ─────────────────────────────────────────────────────────────────
-  // `fixed` prop pins this View to the same position on every page.
+  // `fixed` prop renders this at the same absolute position on every page.
+  // bottom: 20 sits inside the 72pt bottom margin without overlapping body text.
   footer: {
     position:       'absolute',
-    bottom:         24,
+    bottom:         20,
     left:           72,
     right:          72,
     flexDirection:  'row',
     justifyContent: 'space-between',
     alignItems:     'center',
   },
-  footerLeft: {
-    fontSize: 7,
-    color:    '#CCCCCC',
-  },
-  footerRight: {
+  footerText: {
     fontSize: 7,
     color:    '#CCCCCC',
   },
 });
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-// Each sub-component is a pure function (no hooks) — safe to call inside the
-// react-pdf render tree which does not support the full React hook surface.
+// ─────────────────────────────────────────────────────────────────────────────
+// SUB-COMPONENTS
+// Pure functions — no hooks. react-pdf's render tree does not support hooks.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Section heading: 12pt Bold ALL CAPS label + full-width horizontal rule.
- * The rule is a zero-height View with a background colour — react-pdf's
- * equivalent of `border-bottom` (which is not supported as a style prop).
+ * Section heading: 12pt Bold ALL CAPS label + full-width hairline rule.
  */
 const SectionHead: React.FC<{ label: string }> = ({ label }) => (
   <View style={S.sectionHeader}>
@@ -366,8 +382,7 @@ const SectionHead: React.FC<{ label: string }> = ({ label }) => (
 
 /**
  * A single bullet-point line.
- * The "•" dot has a fixed 8pt width so all continuation lines align cleanly.
- * Both dot and text inherit 10pt / 1.45 line-height from their styles.
+ * Fixed-width dot ensures continuation lines align under the text, not the dot.
  */
 const Bullet: React.FC<{ text: string }> = ({ text }) => (
   <View style={S.bullet}>
@@ -377,43 +392,42 @@ const Bullet: React.FC<{ text: string }> = ({ text }) => (
 );
 
 /**
- * One complete work experience block.
+ * One work-experience block.
  *
- * wrap={false} instructs react-pdf to keep this entire View on one page.
- * If there is not enough room on the current page, the renderer starts a new
- * page before this block rather than splitting it mid-way.
+ * wrap={false} — keeps Title + Company + all bullets together on one page.
+ * If the block doesn't fit on the current page, react-pdf starts a new page
+ * before it rather than splitting the entry mid-way.
  *
- * Metrics are rendered as regular bullet points — they carry the same
- * information as coloured badges but are fully parseable by ATS text extraction.
+ * Metrics are rendered as regular bullets — same information as coloured badges
+ * but fully present in the PDF text layer for ATS parsing.
  */
-const ExperienceBlock: React.FC<{ entry: ExperienceEntry }> = ({ entry }) => (
-  <View style={S.expEntry} wrap={false}>
-    {/* Title (bold) and date range (italic) on the same line, right-aligned */}
-    <View style={S.expTitleRow}>
-      <Text style={S.expTitle}>{entry.title}</Text>
-      <Text style={S.expDate}>{dateRange(entry)}</Text>
+const ExperienceBlock: React.FC<{ entry: ExperienceEntry }> = ({ entry }) => {
+  // Combine responsibilities and metrics into a single bullet list.
+  // Metrics are quantified wins — they belong in the same visual stream as
+  // responsibilities, not in a separate coloured badge section.
+  const allBullets = [
+    ...(entry.responsibilities ?? []),
+    ...(entry.metrics ?? []),
+  ].filter(Boolean);
+
+  return (
+    <View style={S.expEntry} wrap={false}>
+      <View style={S.expTitleRow}>
+        <Text style={S.expTitle}>{entry.title}</Text>
+        <Text style={S.expDate}>{dateRange(entry)}</Text>
+      </View>
+      <Text style={S.expCompany}>{entry.company}</Text>
+      {allBullets.map((line, i) => (
+        <Bullet key={`b-${i}`} text={line} />
+      ))}
     </View>
-
-    {/* Company on its own line — recruiters read Company before anything else */}
-    <Text style={S.expCompany}>{entry.company}</Text>
-
-    {/* Responsibilities — action-verb bullets */}
-    {entry.responsibilities.map((r, i) => (
-      <Bullet key={`r-${i}`} text={r} />
-    ))}
-
-    {/* Quantified metrics — rendered as plain bullets, not coloured badges.
-        Keeps them in the text layer and ATS-parseable. */}
-    {entry.metrics.map((m, i) => (
-      <Bullet key={`m-${i}`} text={m} />
-    ))}
-  </View>
-);
+  );
+};
 
 /**
  * One education block.
- * Degree + field on the left, graduation year on the right.
- * Honours (Dean's List, Summa Cum Laude) on a separate italic line.
+ * Degree + field on the left, graduation year right-aligned.
+ * Honours on a separate italic line when present.
  */
 const EducationBlock: React.FC<{ entry: EducationEntry }> = ({ entry }) => (
   <View style={S.eduEntry} wrap={false}>
@@ -424,46 +438,36 @@ const EducationBlock: React.FC<{ entry: EducationEntry }> = ({ entry }) => (
       <Text style={S.eduYear}>{entry.graduationYear}</Text>
     </View>
     <Text style={S.eduInstitution}>{entry.institution}</Text>
-    {entry.honours ? (
+    {entry.honours?.trim() ? (
       <Text style={S.eduHonours}>{entry.honours}</Text>
     ) : null}
   </View>
 );
 
-// ─── Contact line builder ──────────────────────────────────────────────────────
-/**
- * Builds a single plain-text contact line from whatever contact fields
- * are available.  Items are joined with " | " separators.
- *
- * The separator " | " is the Canadian HR standard:
- *   Winnipeg, MB | (204) 555-0100 | jane@example.com | linkedin.com/in/jane
- *
- * We use " | " (pipe with spaces) rather than " · " (interpunct) because
- * some ATS parsers use the pipe as a field delimiter — seeing it in the
- * contact line tells the parser that these are distinct data items.
- */
-function buildContactLine(
-  city?:      string | null,
-  phone?:     string | null,
-  email?:     string | null,
-  linkedIn?:  string | null,
-): string {
-  return [city, phone, email, linkedIn]
-    .filter((v): v is string => Boolean(v?.trim()))
-    .join(' | ');
-}
-
-// ─── Main Document ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT DOCUMENT COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The root PDF document component.
+ * ResumePDF — the pure PDF presenter.
  *
- * Rendered client-side via:
- *   pdf(<ResumePDF data={resumeData} userEmail={email} />).toBlob()
+ * Caller is responsible for reading Zustand state and passing it as props:
  *
- * The `data` prop is `Partial<ResumeData>` because the Zustand store
- * initialises with an empty object; every field access uses optional chaining
- * or nullish coalescing to prevent runtime errors on missing fields.
+ *   // Inside a component that has access to the store:
+ *   const resumeData = useAppStore(s => s.resumeData);
+ *   const user       = useAppStore(s => s.user);
+ *
+ *   // For react-pdf PDFDownloadLink (renders inside worker thread):
+ *   <PDFDownloadLink
+ *     document={<ResumePDF data={resumeData} userEmail={user?.email} />}
+ *     fileName="resume.pdf"
+ *   >
+ *     {({ loading }) => loading ? 'Preparing…' : 'Download PDF'}
+ *   </PDFDownloadLink>
+ *
+ *   // For programmatic blob generation (e.g. preview iframe):
+ *   const { pdf } = await import('@react-pdf/renderer');
+ *   const blob    = await pdf(<ResumePDF data={resumeData} />).toBlob();
  */
 export const ResumePDF: React.FC<ResumePDFProps> = ({
   data,
@@ -474,29 +478,30 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
   linkedIn,
   certifications,
 }) => {
-  const experiences = data.experiences ?? [];
-  const skills      = data.skills      ?? [];
-  const education   = data.education   ?? [];
-  const certs       = certifications   ?? [];
+  const experiences = data.experiences  ?? [];
+  const skills      = data.skills       ?? [];
+  const education   = data.education    ?? [];
+  const certs       = certifications    ?? [];
 
-  // Resolve the display name:
-  //   1. Explicit `name` prop (from a future "edit name" UI)
-  //   2. targetTitle as a reasonable fallback (visible and scannable)
-  //   3. Hard fallback "Your Name" so the PDF is never blank
-  const displayName = (name?.trim() || data.targetTitle?.trim() || 'Your Name');
+  // Display name resolution order:
+  //   1. `name` prop (explicit override — future "edit name" UI)
+  //   2. targetTitle (visible, scannable fallback)
+  //   3. Hard fallback — PDF is never rendered with a blank name
+  const displayName = name?.trim() || data.targetTitle?.trim() || 'Your Name';
 
-  // Build the single-line contact string
+  // Contact line — single plain-text string, items separated by " | "
   const contactLine = buildContactLine(city, phone, userEmail, linkedIn);
 
-  // Build comma-separated skills string — one plain sentence, fully ATS-parseable
-  const skillsLine = skills.join(', ');
+  // Skills — comma-separated flat sentence. No pill badges, no flex wrapping.
+  const skillsLine  = skills.filter(Boolean).join(', ');
 
-  // Build comma-separated certifications string
-  const certsLine = certs.join(', ');
+  // Certifications — comma-separated flat sentence.
+  const certsLine   = certs.filter(Boolean).join(', ');
 
   return (
     <Document
-      // PDF metadata — used by Acrobat, browsers, and some ATS for pre-indexing
+      // PDF metadata — used by Acrobat, browser PDF viewers, and some ATS systems
+      // for lightweight pre-indexing before the full text extraction pass.
       title={`${displayName} — Resume`}
       author={displayName}
       subject={data.targetTitle ? `${data.targetTitle} Resume` : 'Professional Resume'}
@@ -506,25 +511,23 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
     >
       <Page size="LETTER" style={S.page}>
 
-        {/* ══ HEADER: Name + Title + Contact ══════════════════════════════ */}
+        {/* ══ HEADER ══════════════════════════════════════════════════════════
+            Name (18pt Bold) → Target Title (11pt) → Contact line (10pt)
+            The visual hierarchy mirrors how a recruiter scans the top third. */}
         <View style={S.header}>
-
-          {/* Full name — 20pt Bold, the largest element on the page */}
           <Text style={S.name}>{displayName}</Text>
 
-          {/* Target job title — anchors the reader's expectation immediately */}
-          {data.targetTitle ? (
-            <Text style={S.headerTitle}>{data.targetTitle}</Text>
+          {data.targetTitle?.trim() ? (
+            <Text style={S.headerTitle}>{data.targetTitle.trim()}</Text>
           ) : null}
 
-          {/* Single contact line — all items separated by " | " */}
           {contactLine ? (
             <Text style={S.contactLine}>{contactLine}</Text>
           ) : null}
-
         </View>
 
-        {/* ══ PROFESSIONAL SUMMARY ════════════════════════════════════════ */}
+        {/* ══ PROFESSIONAL SUMMARY ════════════════════════════════════════════
+            2–3 sentence narrative. Rendered only when present — no placeholder. */}
         {data.summary?.trim() ? (
           <View style={S.section}>
             <SectionHead label="Professional Summary" />
@@ -532,7 +535,9 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
           </View>
         ) : null}
 
-        {/* ══ WORK EXPERIENCE ═════════════════════════════════════════════ */}
+        {/* ══ WORK EXPERIENCE ═════════════════════════════════════════════════
+            Reverse chronological — the AI interview collects entries in order.
+            wrap={false} per entry prevents splitting a job block across pages. */}
         {experiences.length > 0 ? (
           <View style={S.section}>
             <SectionHead label="Work Experience" />
@@ -542,7 +547,8 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
           </View>
         ) : null}
 
-        {/* ══ EDUCATION ═══════════════════════════════════════════════════ */}
+        {/* ══ EDUCATION ═══════════════════════════════════════════════════════
+            Reverse chronological. Degree, field, institution, graduation year. */}
         {education.length > 0 ? (
           <View style={S.section}>
             <SectionHead label="Education" />
@@ -552,10 +558,10 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
           </View>
         ) : null}
 
-        {/* ══ SKILLS ══════════════════════════════════════════════════════ */}
-        {/* Comma-separated plain text — the most ATS-safe skills format.
-            Bordered pills, chip arrays, and tag clouds are HTML/CSS concepts
-            that have no semantic equivalent in a PDF text layer. */}
+        {/* ══ SKILLS ══════════════════════════════════════════════════════════
+            Flat comma-separated sentence — the most ATS-parseable skills format.
+            EXCLUSION: no bordered pills, no flex-wrap chips, no tag clouds.
+            Those are HTML/CSS concepts with no PDF text-layer equivalent. */}
         {skillsLine ? (
           <View style={S.section}>
             <SectionHead label="Skills" />
@@ -563,8 +569,9 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
           </View>
         ) : null}
 
-        {/* ══ CERTIFICATIONS ══════════════════════════════════════════════ */}
-        {/* Only rendered when certifications are provided. */}
+        {/* ══ CERTIFICATIONS ══════════════════════════════════════════════════
+            Only rendered when certifications are provided by the caller.
+            Comma-separated — same ATS-safe pattern as skills. */}
         {certsLine ? (
           <View style={S.section}>
             <SectionHead label="Certifications" />
@@ -572,14 +579,16 @@ export const ResumePDF: React.FC<ResumePDFProps> = ({
           </View>
         ) : null}
 
-        {/* ══ FOOTER: attribution + page number ═══════════════════════════ */}
-        {/* `fixed` renders this View at the same absolute position on every page */}
+        {/* ══ FOOTER ══════════════════════════════════════════════════════════
+            `fixed` pins this to the same absolute position on every page.
+            7pt light grey — readable but visually subordinate to body content.
+            EXCLUSION: no dashed lines, no ghost gaps, no UI decoration. */}
         <View style={S.footer} fixed>
-          <Text style={S.footerLeft}>
+          <Text style={S.footerText}>
             Generated by JobifAI · ATS-Optimised · Canadian HR Standards
           </Text>
           <Text
-            style={S.footerRight}
+            style={S.footerText}
             render={({ pageNumber, totalPages }) =>
               `Page ${pageNumber} of ${totalPages}`
             }
