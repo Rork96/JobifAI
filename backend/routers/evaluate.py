@@ -494,3 +494,289 @@ async def rewrite_section(
             new_text=body.old_text,
             predicted_score_increase=3,
         )
+
+
+# ─── ATS Analysis Endpoint ─────────────────────────────────────────────────────
+#
+# POST /api/analyze
+#
+# This is the SINGLE authoritative analysis call that drives the onboarding
+# → workspace handoff.  It replaces the old /api/ats-score + client-side
+# greeting assembly with ONE atomic response:
+#
+#   score             — 0-100 ATS keyword-coverage percentage
+#   foundKeywords     — exact hard-skill matches in both documents
+#   missingKeywords   — up to 12 important JD keywords absent from the resume
+#   contextualMatches — synonym pairs (e.g. resumeTerm: "Node" ↔ vacancyTerm: "Node.js")
+#   macMessage        — the exact first Mac chat message (personalised, gap-aware)
+#
+# WHY generate macMessage on the backend?
+#   If we build it client-side from foundKeywords + score, Mac always says the
+#   same templated sentence.  Gemini generates a genuinely personalised opener
+#   that references the candidate's specific role / strongest gaps.
+#
+# TEMPERATURE 0.0 — deterministic output so the JSON contract is reliable.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_ANALYZE_SYSTEM = """\
+You are a precise ATS (Applicant Tracking System) analysis engine.
+Your ONLY job: compare a resume against a job description and return a strict JSON analysis.
+
+══ OUTPUT FORMAT (respond with ONLY this JSON — no markdown, no code fences) ══
+{
+  "score": <integer 0-100>,
+  "foundKeywords":     [<strings>],
+  "missingKeywords":   [<strings>],
+  "contextualMatches": [{"resumeTerm": <string>, "vacancyTerm": <string>}],
+  "macMessage":        <string>
+}
+
+══ FIELD RULES ════════════════════════════════════════════════════════════════
+score
+  Percentage of important JD hard-skills / role-specific keywords covered by
+  the resume.  Weight technical tools and certifications higher than soft skills.
+  HARD CAP: the value must be an integer between 0 and 100 inclusive.
+  Even for a perfect keyword match, do not exceed 100.
+
+foundKeywords
+  Specific technical skills, tools, frameworks, or role-specific terms that
+  appear verbatim or near-verbatim in BOTH documents.
+  Include: programming languages, frameworks, cloud platforms, methodologies,
+           certifications, domain terms.
+  Exclude: generic soft skills ("communication", "teamwork") unless the JD
+           heavily emphasises them.
+
+missingKeywords
+  Up to 12 of the most impactful JD keywords absent from the resume.
+  Prioritise: hard skills > tools > certifications > domain knowledge.
+  Each entry must be a concise, standalone term (e.g. "Kubernetes", "REST APIs").
+  If the resume covers all important keywords, return an empty list [].
+
+contextualMatches
+  Synonym pairs ONLY — where the resume used a genuinely equivalent but
+  differently-worded term.  Example: resumeTerm "Postgres" ↔ vacancyTerm
+  "PostgreSQL".  Leave as [] if no real synonyms exist.
+  Do NOT include false equivalences.
+
+macMessage — STRICT CONDITIONAL LOGIC
+  ──────────────────────────────────────────────────────────────────────────────
+  Evaluate BOTH conditions before writing:
+    CONDITION A: score >= 90
+    CONDITION B: missingKeywords is empty (i.e., [])
+
+  ► POLISHING STRATEGY  (use when CONDITION A is true OR CONDITION B is true)
+    The resume is already highly optimised.  Switching to gap-analysis here would
+    be inaccurate and harmful to the user's confidence.
+    RULES:
+    ✓ Open by congratulating the candidate and citing the exact numeric score.
+    ✓ Confirm they have all (or nearly all) core keywords.
+    ✓ Pivot immediately to polishing: quantified achievements, stronger action
+      verbs, or readiness to download the PDF.
+    ✗ DO NOT mention gaps, missing skills, or suggest adding keywords.
+    ✗ DO NOT exceed 3 sentences.
+    EXAMPLE (adapt — do not copy verbatim):
+      "Wow! Your resume is already a fantastic match for this role at 96/100 —
+      you have all the core keywords an ATS will look for.  Now let's take it
+      from good to great: should we sharpen your achievement metrics with hard
+      numbers, upgrade a few action verbs, or are you ready to download the PDF?"
+
+  ► GAP-ANALYSIS STRATEGY  (use when CONDITION A is false AND CONDITION B is false)
+    The resume has meaningful gaps that the candidate must close to pass ATS filters.
+    RULES:
+    ✓ Mention the exact numeric score.
+    ✓ Name the top 2–3 most critical missing keywords by name.
+    ✓ Tone: expert, direct, encouraging — like a senior recruiter who genuinely
+      wants the candidate to succeed.
+    ✗ Do NOT use generic filler ("Great resume!", "Let's get started!").
+    ✗ Do NOT exceed 3 sentences.
+    EXAMPLE (adapt — do not copy verbatim):
+      "Your ATS score is 58/100 — a reasonable start, but Docker and Kubernetes
+      are blocking your path to the shortlist for this role.  Let's work those
+      in naturally and I'll show you exactly where each one fits."
+  ──────────────────────────────────────────────────────────────────────────────
+  UNIVERSAL RULES (apply to BOTH strategies):
+  ✓ Always cite the exact numeric score as "X/100".
+  ✓ Keep it to 2–3 sentences maximum — no bullet points, no headers.
+  ✗ Never invent keywords or facts not present in the documents.
+"""
+
+
+class ContextualMatch(BaseModel):
+    """A synonym pair: the resume used `resumeTerm` where the JD said `vacancyTerm`."""
+    resumeTerm:  str = Field(..., description="Term as it appeared in the resume")
+    vacancyTerm: str = Field(..., description="Equivalent term as it appeared in the JD")
+
+
+class AnalyzeRequest(BaseModel):
+    """
+    Payload for POST /api/analyze.
+
+    Both fields must be plain text (already extracted by /api/upload-resume
+    and /api/parse-job before this endpoint is called).
+    """
+    resume_text:     str = Field(..., min_length=10,  description="Plain text of the resume")
+    job_description: str = Field(..., min_length=10,  description="Plain text of the job description")
+
+
+class AnalyzeResponse(BaseModel):
+    """
+    The atomic ATS analysis contract — mirrors ATSAnalysisResponse in frontend/src/types/index.ts.
+
+    This is the SINGLE source of truth for:
+      • The ATS score ring (score)
+      • The SkillGapChecklist chips (foundKeywords / missingKeywords)
+      • Mac's first chat message (macMessage)
+    """
+    score:             int                  = Field(..., ge=0, le=100,      description="ATS keyword-coverage score 0–100")
+    foundKeywords:     list[str]            = Field(default_factory=list,   description="Keywords present in both resume and JD")
+    missingKeywords:   list[str]            = Field(default_factory=list,   description="Important JD keywords absent from resume (max 12)")
+    contextualMatches: list[ContextualMatch] = Field(default_factory=list,  description="Synonym pairs found across both documents")
+    macMessage:        str                  = Field(default="",             description="Personalised first message for the Mac chat agent")
+
+
+@router.post(
+    "/analyze",
+    response_model=AnalyzeResponse,
+    summary="Full ATS analysis — score + keyword gaps + Mac's first message",
+    description="""
+Runs a single atomic Gemini analysis that produces everything the workspace
+needs to initialise:
+
+- **score** (0–100): keyword-coverage ATS match percentage
+- **foundKeywords**: hard-skill matches present in both documents
+- **missingKeywords**: up to 12 impactful JD keywords absent from the resume
+- **contextualMatches**: synonym pairs (e.g. "Node" ↔ "Node.js")
+- **macMessage**: the exact first message the Mac chat agent should say
+
+**Fail-safe**: on any Gemini error returns score=0, empty lists, and a
+generic `macMessage` so the workspace can still open without crashing.
+    """,
+)
+async def analyze(
+    body:     AnalyzeRequest,
+    settings: Settings = Depends(get_settings),
+) -> AnalyzeResponse:
+    """
+    POST /api/analyze — Atomic onboarding → workspace handoff.
+
+    Called ONCE per session when the user clicks "Analyse my resume →".
+    Returns the full ATSAnalysisResponse contract in a single round-trip.
+    Temperature 0.0 for deterministic, contract-safe JSON output.
+    """
+    genai.configure(api_key=settings.gemini_api_key)
+
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=_ANALYZE_SYSTEM,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.0,        # strict determinism — same inputs → same JSON
+            top_p=1.0,
+            max_output_tokens=1024, # enough for all lists + a 3-sentence message
+        ),
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        },
+    )
+
+    # Truncate inputs to stay well within the 1 M-token context window while
+    # keeping enough signal for reliable keyword analysis.
+    resume_snip = body.resume_text[:4000]
+    jd_snip     = body.job_description[:3000]
+
+    prompt = (
+        f"RESUME:\n{resume_snip}\n\n"
+        f"JOB DESCRIPTION:\n{jd_snip}\n\n"
+        "Return ONLY the JSON — no other text."
+    )
+
+    try:
+        response = await model.generate_content_async(prompt)
+        raw = (response.text or "").strip()
+
+        # Strip markdown code fences if the model wraps the JSON anyway
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+
+        # Use regex fallback to extract the JSON object if there's any surrounding text
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        result: dict = json.loads(m.group(0) if m else raw)
+
+        # ── Safety cap — mathematically enforced, not trust-the-LLM ─────────
+        # The system prompt asks for 0-100, but we never rely solely on the
+        # model's arithmetic.  This guard runs regardless of what Gemini returns.
+        _MAX_SCORE = 100
+        _MIN_SCORE = 0
+        raw_score = int(result.get("score", 0))
+        score     = max(_MIN_SCORE, min(_MAX_SCORE, raw_score))
+
+        found_kw   = [str(k) for k in result.get("foundKeywords",   []) if k][:30]
+        missing_kw = [str(k) for k in result.get("missingKeywords", []) if k][:12]
+
+        raw_matches = result.get("contextualMatches", [])
+        ctx_matches: list[ContextualMatch] = []
+        for item in raw_matches:
+            if isinstance(item, dict) and item.get("resumeTerm") and item.get("vacancyTerm"):
+                ctx_matches.append(ContextualMatch(
+                    resumeTerm=str(item["resumeTerm"]),
+                    vacancyTerm=str(item["vacancyTerm"]),
+                ))
+
+        mac_msg = str(result.get("macMessage", "")).strip()
+        if not mac_msg:
+            # Server-side fallback — mirrors the prompt's conditional strategy
+            # so the client always gets a contextually appropriate message even
+            # when Gemini returns an empty macMessage field.
+            is_polishing = score >= 90 or len(missing_kw) == 0
+            if is_polishing:
+                mac_msg = (
+                    f"Your resume is already a fantastic match for this role at {score}/100 — "
+                    "you have all the core keywords an ATS will look for.  "
+                    "Now let's polish it further: should we sharpen your achievement metrics "
+                    "with hard numbers, upgrade a few action verbs, or are you ready to download the PDF?"
+                )
+            else:
+                top_gaps = ", ".join(missing_kw[:3]) if missing_kw else "a few key skills"
+                mac_msg = (
+                    f"Your ATS score is {score}/100 — a solid start, but {top_gaps} "
+                    "are the gaps standing between you and the shortlist.  "
+                    "Let's work those in naturally and I'll show you exactly where each one fits."
+                )
+
+        logger.info(
+            "Analyze — score=%d (raw=%d)  found=%d  missing=%d  ctx=%d  strategy=%s",
+            score, raw_score, len(found_kw), len(missing_kw), len(ctx_matches),
+            "polishing" if (score >= 90 or len(missing_kw) == 0) else "gap-analysis",
+        )
+
+        return AnalyzeResponse(
+            score=score,
+            foundKeywords=found_kw,
+            missingKeywords=missing_kw,
+            contextualMatches=ctx_matches,
+            macMessage=mac_msg,
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Analyze endpoint error (fail-safe) — %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        # Fail-safe: return a valid response so the workspace still opens.
+        return AnalyzeResponse(
+            score=0,
+            foundKeywords=[],
+            missingKeywords=[],
+            contextualMatches=[],
+            macMessage=(
+                "I wasn't able to complete the full analysis right now, but let's keep going. "
+                "Tell me about the role you're targeting and I'll start improving your resume."
+            ),
+        )

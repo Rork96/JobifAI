@@ -32,6 +32,8 @@ from .routers import job                    # Task 7: Job description scraper en
 from .routers import upload                 # Task 7: Resume file upload + parser endpoint
 from .routers import resumes                # Task 9: Resume save/load persistence
 from .routers import payments               # Task 9: Stripe checkout + webhook
+from .routers import polish                  # Final Polish: one-pass HR-Director rewrite
+from .routers import user                    # User progress persistence (auto-save)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Use Python's stdlib logger so output lands in Docker logs (stdout/stderr).
@@ -154,11 +156,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The router already declares its own prefix ("/api/chat") and tags, so we
     # include it without an extra prefix here.
     app.include_router(interview.router)  # POST /api/chat/interview (SSE)
-    app.include_router(evaluate.router)   # POST /api/evaluate-edit (ATS scorer)
+    app.include_router(evaluate.router)   # POST /api/evaluate-edit, /api/ats-score, /api/analyze
     app.include_router(upload.router)     # POST /api/upload-resume (file parser)
     app.include_router(job.router)        # POST /api/parse-job (JD scraper)
     app.include_router(resumes.router)    # POST /api/resumes, GET /api/resumes/{id}
     app.include_router(payments.router)   # POST /api/checkout, POST /api/webhooks/stripe
+    app.include_router(polish.router)     # POST /api/resume/final-polish
+    app.include_router(user.router)       # POST /api/user/save-progress
     # Future routers:
     #   app.include_router(auth.router)      # /api/auth
 

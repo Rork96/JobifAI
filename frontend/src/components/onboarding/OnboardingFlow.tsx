@@ -42,6 +42,30 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { MacMascot } from '@/components/mascot/MacMascot';
+import type { ATSAnalysisResponse } from '@/types';
+
+// ── ATSAnalysisResponse runtime type guard ────────────────────────────────────
+/**
+ * Validates that an unknown API response matches the ATSAnalysisResponse
+ * contract BEFORE it is written to the Zustand store.
+ *
+ * WHY a type guard instead of casting?
+ *   `as ATSAnalysisResponse` silently accepts anything — a malformed backend
+ *   response or a 200 OK with an error HTML body would corrupt the store and
+ *   cause cryptic downstream failures.  This guard throws the problem back to
+ *   the catch block where it belongs.
+ */
+function isATSAnalysisResponse(data: unknown): data is ATSAnalysisResponse {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Record<string, unknown>;
+  return (
+    typeof d.score             === 'number'  &&
+    Array.isArray(d.foundKeywords)           &&
+    Array.isArray(d.missingKeywords)         &&
+    Array.isArray(d.contextualMatches)       &&
+    typeof d.macMessage        === 'string'
+  );
+}
 
 // ── Step slide animation preset ───────────────────────────────────────────────
 const stepVariants = {
@@ -103,7 +127,11 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   // Separate loading flags so Mac shows processing for both independently.
   const [isParsingFile,    setIsParsingFile]    = useState(false);
   const [isParsingJob,     setIsParsingJob]     = useState(false);
-  const [isScratchFetching, setIsScratchFetching] = useState(false);
+  const [isScratchFetching,   setIsScratchFetching]   = useState(false);
+  // True while POST /api/analyze runs at the end of the scratch sub-form.
+  // Blocks the "Start building" button and shows "Evaluating…" so the user
+  // doesn't slam the button multiple times during the async call.
+  const [isScratchEvaluating, setIsScratchEvaluating] = useState(false);
   const [fileError,     setFileError]     = useState('');
   const [jobError,      setJobError]      = useState('');
   const [uploadedFilename, setUploadedFilename] = useState('');
@@ -139,50 +167,22 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const storeResumeText       = useAppStore((s) => s.uploadedResumeText);
   const storeJobDescription   = useAppStore((s) => s.jobDescription);
 
+  // ── Atomic analysis state (Task 19 Iron Logic) ───────────────────────────
+  const isAnalyzing      = useAppStore((s) => s.isAnalyzing);
+  const analysisError    = useAppStore((s) => s.analysisError);
+  const analysisResult   = useAppStore((s) => s.analysisResult);
+  const setIsAnalyzing   = useAppStore((s) => s.setIsAnalyzing);
+  const setAnalysisError = useAppStore((s) => s.setAnalysisError);
+  const setAnalysisResult= useAppStore((s) => s.setAnalysisResult);
+
   // ── Step 3: real ATS score (API call) ─────────────────────────────────────
   // Runs when step 3 starts in 'upload' mode.
   // Concurrently with the 3-second scan animation so latency is hidden.
-  const [apiScore,   setApiScore]   = useState<number | null>(null);
-  const [apiGaps,    setApiGaps]    = useState<string[]>([]);
-  const [isScoringApi, setIsScoringApi] = useState(false);
-
-  useEffect(() => {
-    if (step !== 3 || onboardingMode !== 'upload') return;
-
-    const resumeText = storeResumeText;
-    if (!resumeText) return;   // no resume → skip real scoring
-
-    setIsScoringApi(true);
-    fetch('/api/ats-score', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        resume_text:     storeResumeText,
-        job_description: storeJobDescription,
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        const score: number = typeof data.score === 'number' ? data.score : 28;
-        const gaps: string[] = Array.isArray(data.skill_gaps) ? data.skill_gaps : [];
-        const matched: string[] = Array.isArray(data.matched_skills) ? data.matched_skills : [];
-        const missing: Array<{ skill: string; impact_percentage: number }> =
-          Array.isArray(data.missing_skills) ? data.missing_skills : [];
-        setApiScore(score);
-        setApiGaps(gaps);
-        setRealAtsScore(score);
-        setSkillGaps(gaps);
-        setMatchedSkills(matched);
-        setMissingSkills(missing);
-      })
-      .catch(() => {
-        // Fallback score on network/API failure — keeps the flow unblocked
-        setApiScore(28);
-        setApiGaps([]);
-      })
-      .finally(() => setIsScoringApi(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, onboardingMode]);
+  // apiScore / apiGaps are bridge state for the existing step-3 UI.
+  // They are populated by handleAnalyze (below) from analysisResult — no
+  // useEffect polling, no fake timeouts.
+  const [apiScore, setApiScore] = useState<number | null>(null);
+  const [apiGaps,  setApiGaps]  = useState<string[]>([]);
 
   // ── Step 3: ATS scan animation ─────────────────────────────────────────────
   useEffect(() => {
@@ -245,7 +245,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   // ── Mascot state ───────────────────────────────────────────────────────────
   // Transitions through processing → shocked/processing/success once score arrives.
   const mascotState: import('@/types').MascotState =
-    (isParsingFile || isParsingJob || isScoringApi)               ? 'processing' :
+    (isParsingFile || isParsingJob || isAnalyzing)                ? 'processing' :
     step === 3 && !scanComplete                                    ? 'processing' :
     step === 3 && scanComplete && onboardingMode !== 'scratch' && apiScore === null ? 'processing' :
     step === 3 && scanComplete && onboardingMode !== 'scratch' && displayScore < 50  ? 'shocked' :
@@ -267,14 +267,17 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   }, [setOnboardingMode]);
 
   // Called when user submits the scratch sub-form.
-  // If the input is a URL that hasn't been fetched, fetch it first so the store
-  // receives actual JD text (not a raw URL) before the workspace mounts.
+  // If the input is a URL, auto-fetch it so the store receives real JD text.
+  // If the store already contains resume data (e.g. from a prior session),
+  // we run a full /api/analyze call before transitioning to the paywall so
+  // the score shown is real rather than 0.
   const handleScratchSubmit = useCallback(async () => {
     const raw = scratchJobInput.trim();
     if (!raw) return;
 
+    // ── Step 1: resolve JD text ───────────────────────────────────────────────
+    let finalJd = raw;
     if (looksLikeUrl(raw)) {
-      // Auto-fetch the URL so the store gets real JD text, not a URL string.
       setIsScratchFetching(true);
       try {
         const res  = await fetch('/api/parse-job', {
@@ -283,21 +286,75 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
           body:    JSON.stringify({ url: raw }),
         });
         const data = await res.json();
-        const jdText = data.success && data.text ? data.text : raw;
-        setJobDescription(jdText);
+        finalJd = (data.success && data.text) ? data.text : raw;
       } catch {
-        // On any error fall back to storing the raw input (URL or text)
-        setJobDescription(raw);
+        finalJd = raw;  // fall back to raw URL text on network error
       } finally {
         setIsScratchFetching(false);
       }
-    } else {
-      setJobDescription(raw);
+    }
+    setJobDescription(finalJd);
+
+    // ── Step 2: evaluate if we have resume data ───────────────────────────────
+    // For scratch users who have resume content in the store (structured data
+    // from a prior interview or an uploaded draft), run /api/analyze so the
+    // paywall shows a real score instead of 0/100.
+    // The guard (length >= 10) ensures we don't send an empty payload.
+    const storeState   = useAppStore.getState();
+    const resumeSource =
+      storeState.uploadedResumeText?.trim() ||
+      (() => {
+        const json = JSON.stringify(storeState.resumeData || {});
+        return json === '{}' ? '' : json;
+      })();
+
+    if (resumeSource.length >= 10 && finalJd.length >= 10) {
+      setIsScratchEvaluating(true);
+      try {
+        const res = await fetch('/api/analyze', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            resume_text:     resumeSource,
+            job_description: finalJd,
+          }),
+        });
+
+        if (res.ok) {
+          const data: unknown = await res.json();
+          if (isATSAnalysisResponse(data)) {
+            // ── Step 3: update store with real score ────────────────────────
+            setAnalysisResult(data);
+            setRealAtsScore(data.score);
+            setSkillGaps(data.missingKeywords);
+            setMatchedSkills(data.foundKeywords);
+            const gap   = Math.max(0, 100 - data.score);
+            const count = Math.max(data.missingKeywords.length, 1);
+            setMissingSkills(
+              data.missingKeywords.map((kw, i) => ({
+                skill:             kw,
+                impact_percentage: Math.max(2, Math.round(gap / count) - i),
+              })),
+            );
+          }
+        }
+      } catch {
+        // Silent — evaluation failure must not block the transition.
+        // The paywall will show a 0/100 score, which is honest for a blank resume.
+      } finally {
+        // ── Step 4: disable loading, THEN transition ──────────────────────────
+        setIsScratchEvaluating(false);
+      }
     }
 
+    // ── Step 5: enter the paywall ─────────────────────────────────────────────
+    // Called after both the JD fetch AND any evaluation have settled.
     setShowScratchSubForm(false);
-    onComplete();  // Skip ATS scoring — makes no sense without an existing resume
-  }, [scratchJobInput, setJobDescription, onComplete]);
+    onComplete();
+  }, [
+    scratchJobInput, setJobDescription, onComplete,
+    setAnalysisResult, setRealAtsScore, setSkillGaps, setMatchedSkills, setMissingSkills,
+  ]);
 
   // ── Upload resume via backend API ──────────────────────────────────────────
   /**
@@ -442,30 +499,104 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     }
   }, [jobInput]);
 
-  // ── Submit the upload form ────────────────────────────────────────────────
+  // ── Strict analysis fetch (Iron Logic — Task 19) ──────────────────────────
   /**
-   * Called when the user clicks "Analyse my resume →".
-   * Commits the collected data to the Zustand store, then advances to Step 3.
+   * handleAnalyze — the single entry-point for the onboarding → workspace flow.
    *
-   * WHY commit to the store here (not on each keystroke)?
-   *   The Zustand store is the source of truth for the AI chat engine.
-   *   We only want the final, confirmed data to land there — not live
-   *   textarea content that changes with every character typed.
+   * Implements the exact algorithm from the Task 19 spec:
+   *
+   *   1. GUARD      If either text input is empty, return early (no side-effects).
+   *   2. RESET      Clear any prior error/result and set isAnalyzing=true.
+   *                 This atomically triggers the Step 3 loading screen.
+   *   3. COMMIT     Write resume text + JD to the Zustand store so all
+   *                 downstream consumers (ChatPanel, DocumentPreview) have them.
+   *   4. ADVANCE    Navigate to Step 3 (scan animation plays concurrently).
+   *   5. FETCH      Await POST /api/analyze — single round-trip.
+   *   6. TYPE GUARD Validate the response with isATSAnalysisResponse().
+   *                 A malformed response is treated as a failure (goes to catch).
+   *   7. SUCCESS    Populate the atomic analysisResult + legacy bridge state.
+   *                 The Step 3 "proceed" button becomes active after this.
+   *   8. CATCH      Set analysisError — user stays on Step 3, button blocked.
+   *   9. FINALLY    setIsAnalyzing(false) — always, even on error.
    */
-  const handleUploadSubmit = useCallback(() => {
-    // Priority order for job description text:
-    //   1. Text from the paste-fallback textarea (user pasted after scrape blocked)
-    //   2. Text fetched successfully from a URL (auto-scraped)
-    //   3. Raw text typed/pasted directly into the URL/text input field
+  const handleAnalyze = useCallback(async () => {
+    // Priority order for job description text (same logic as before):
+    //   1. Paste-fallback textarea (URL was blocked, user pasted manually)
+    //   2. Auto-fetched text from a URL via /api/parse-job
+    //   3. Raw text typed/pasted directly into the input field
     const finalJobText = (showPasteFallback ? jdPasteText : undefined)
       ?? jobFetchedText
       ?? jobInput.trim();
 
+    // ── 1. GUARD ─────────────────────────────────────────────────────────────
+    if (!resumeText.trim() || !finalJobText.trim()) return;
+
+    // ── 2. RESET (atomic — one set() call to avoid intermediate renders) ─────
+    useAppStore.setState({ analysisError: null, analysisResult: null });
+    setIsAnalyzing(true);
+
+    // ── 3. COMMIT ─────────────────────────────────────────────────────────────
     setUploadedResumeText(resumeText);
     setJobDescription(finalJobText);
+
+    // ── 4. ADVANCE — show the scan animation immediately ─────────────────────
     advanceTo(3);
-  }, [resumeText, jobFetchedText, jobInput, jdPasteText, showPasteFallback,
-      setUploadedResumeText, setJobDescription, advanceTo]);
+
+    try {
+      // ── 5. FETCH ───────────────────────────────────────────────────────────
+      const res = await fetch('/api/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resume_text:     resumeText,
+          job_description: finalJobText,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`/api/analyze returned HTTP ${res.status}`);
+
+      const data: unknown = await res.json();
+
+      // ── 6. TYPE GUARD — reject any response that breaks the contract ────────
+      if (!isATSAnalysisResponse(data)) {
+        throw new Error('Response did not match ATSAnalysisResponse contract');
+      }
+
+      // ── 7. SUCCESS ─────────────────────────────────────────────────────────
+      // Atomic store write — single source of truth for the workspace
+      setAnalysisResult(data);
+      setRealAtsScore(data.score);
+      setSkillGaps(data.missingKeywords);
+      setMatchedSkills(data.foundKeywords);
+      // Derive impact_percentage from score gap spread across missing keywords
+      const gap     = Math.max(0, 100 - data.score);
+      const count   = Math.max(data.missingKeywords.length, 1);
+      setMissingSkills(
+        data.missingKeywords.map((kw, i) => ({
+          skill:             kw,
+          impact_percentage: Math.max(2, Math.round(gap / count) - i),
+        })),
+      );
+
+      // Bridge: keep legacy local state so the existing step-3 UI renders
+      // without any JSX changes in this task.  Next task replaces these
+      // bindings with analysisResult directly.
+      setApiScore(data.score);
+      setApiGaps(data.missingKeywords);
+
+    } catch {
+      // ── 8. CATCH — set error, do NOT advance to workspace ──────────────────
+      setAnalysisError('Analysis failed. Please try again.');
+    } finally {
+      // ── 9. FINALLY — always unblock the UI ──────────────────────────────────
+      setIsAnalyzing(false);
+    }
+  }, [
+    resumeText, jobInput, jobFetchedText, jdPasteText, showPasteFallback,
+    setUploadedResumeText, setJobDescription, setRealAtsScore,
+    setSkillGaps, setMatchedSkills, setMissingSkills,
+    setIsAnalyzing, setAnalysisError, setAnalysisResult, advanceTo,
+  ]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -736,11 +867,18 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
                       <button
                         onClick={handleScratchSubmit}
-                        disabled={!scratchJobInput.trim() || isScratchFetching}
+                        disabled={!scratchJobInput.trim() || isScratchFetching || isScratchEvaluating}
                         className="w-full bg-gradient-to-r from-brand-600 to-brand-700 hover:from-brand-500 hover:to-brand-600 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold text-sm py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
                       >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        {isScratchFetching ? 'Fetching job description…' : 'Start building →'}
+                        {(isScratchFetching || isScratchEvaluating) && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        )}
+                        {!isScratchFetching && !isScratchEvaluating && (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        {isScratchFetching   ? 'Fetching job description…' :
+                         isScratchEvaluating ? 'Evaluating your resume…'   :
+                                               'Start building →'}
                       </button>
 
                       <button
@@ -1050,18 +1188,19 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
                   {/* ── Submit ─────────────────────────────────────────────── */}
                   <button
-                    onClick={handleUploadSubmit}
+                    onClick={handleAnalyze}
                     disabled={
                       !resumeText.trim() ||
                       isParsingFile ||
                       isParsingJob ||
+                      isAnalyzing ||
                       // JD is mandatory — need at least one of: fetched text, paste fallback, or typed input
                       !(jobFetchedText || (showPasteFallback ? jdPasteText.trim() : jobInput.trim()))
                     }
                     className="w-full bg-gradient-to-r from-orange-500 to-amber-500 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold py-3 rounded-2xl transition-all flex items-center justify-center gap-2"
                   >
                     <Wand2 className="w-4 h-4" />
-                    Analyse my resume →
+                    {isAnalyzing ? 'Analysing…' : 'Analyse my resume →'}
                   </button>
 
                   <button
@@ -1148,8 +1287,28 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                   animate={{ opacity: 1 }}
                   transition={{ duration: 0.4 }}
                 >
-                  {/* Loading overlay while API scores in background after scan */}
-                  {onboardingMode !== 'scratch' && scanComplete && apiScore === null && (
+                  {/* Error state — shown when /api/analyze returns a failure */}
+                  {analysisError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-start gap-2 bg-red-500/10 border border-red-500/25 rounded-xl px-3 py-2.5"
+                    >
+                      <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-xs text-red-400 font-medium">{analysisError}</p>
+                        <button
+                          onClick={() => { advanceTo(2); setScanComplete(false); setScanProgress(0); setApiScore(null); useAppStore.setState({ analysisError: null }); }}
+                          className="text-xs text-red-300 hover:text-red-200 underline mt-0.5"
+                        >
+                          ← Go back and try again
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Loading overlay while /api/analyze is in-flight after scan */}
+                  {onboardingMode !== 'scratch' && scanComplete && (isAnalyzing || apiScore === null) && !analysisError && (
                     <motion.div
                       className="flex flex-col gap-3"
                       initial={{ opacity: 0 }}
@@ -1157,7 +1316,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
                     >
                       <div className="flex items-center gap-2 text-gray-500 text-sm">
                         <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
-                        Calculating semantic match…
+                        {isAnalyzing ? 'Running ATS analysis…' : 'Calculating semantic match…'}
                       </div>
 
                       {/* Escape hatch — appears after 8 s if API is still pending */}
@@ -1279,12 +1438,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
 
                   <motion.button
                     onClick={onComplete}
+                    disabled={isAnalyzing || (onboardingMode !== 'scratch' && !analysisResult)}
                     whileTap={{ scale: 0.97 }}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold py-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-2 text-base"
+                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400 text-white font-semibold py-4 rounded-2xl shadow-xl shadow-orange-500/25 flex items-center justify-center gap-2 text-base"
                     initial={{ opacity: 0, y: 10 }}
                     animate={{
-                      opacity: (onboardingMode === 'scratch' || apiScore !== null) && scoreCount > 5 ? 1 : 0,
-                      y:       (onboardingMode === 'scratch' || apiScore !== null) && scoreCount > 5 ? 0 : 10,
+                      opacity: (onboardingMode === 'scratch' || (analysisResult !== null && !isAnalyzing)) && scoreCount > 5 ? 1 : 0,
+                      y:       (onboardingMode === 'scratch' || (analysisResult !== null && !isAnalyzing)) && scoreCount > 5 ? 0 : 10,
                     }}
                     transition={{ duration: 0.4 }}
                   >

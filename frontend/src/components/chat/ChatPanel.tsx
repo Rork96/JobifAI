@@ -239,6 +239,12 @@ export const ChatPanel: React.FC = () => {
   // without triggering an extra re-render.
   const rejectionMessageRef = useRef<string | null>(null);
 
+  // ── Background ATS score sync (Scratch mode) ─────────────────────────────
+  // Debounce timer: after every approved data_extract, wait 3 s then silently
+  // call /api/analyze with the latest resumeData.  The score return value is
+  // written to currentAtsScore via setAtsScore — never blocks the interview.
+  const bgSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // ── Greeting guard (useRef, not module-level) ────────────────────────────────
   // useRef resets correctly when this specific ChatPanel instance is mounted
   // fresh (e.g. workspace mount after paywall is unmounted).
@@ -417,31 +423,42 @@ export const ChatPanel: React.FC = () => {
       const hasResumeData = rd && Object.values(rd).some((v) => v !== null && v !== undefined && v !== '');
       const hasContext    = !!(hasResumeData || jd?.trim() || rawResume?.trim());
 
+      // ── Separate the trigger instruction from the heavy context payloads ────
+      // The old approach embedded rawResume + jd directly into user_message,
+      // which blew past the 4 000-char Pydantic limit and caused 422 errors.
+      //
+      // Fix: user_message carries only a short (<200 char) instruction;
+      //      resume_data and job_context carry the full text in their own
+      //      dedicated fields (max_length=15 000 each on the backend).
+      //      The backend's context-hint builder stitches them back together
+      //      as a bracketed [System context …] note before the instruction.
+
       let greetingMessage: string;
+      // Context fields to send alongside the instruction (never inline in user_message)
+      let greetingResumeData: string | undefined;
+      let greetingJobContext:  string | undefined;
+
       if (rawResume?.trim() && jd?.trim()) {
-        // Both resume + JD — ask Mac to analyze gaps immediately
         greetingMessage =
-          `The user has provided their current resume and a target job description. ` +
-          `Analyze the key skill and experience gaps, then tell them the top 3 things to improve first. ` +
-          `Be specific and actionable.\n\n` +
-          `RESUME:\n${rawResume.slice(0, 3000)}\n\n` +
-          `JOB DESCRIPTION:\n${jd.slice(0, 1500)}`;
+          'System: The user has provided their current resume and a target job description. ' +
+          'Analyze the key skill and experience gaps, then tell them the top 3 things to improve first. ' +
+          'Be specific and actionable.';
+        greetingResumeData = rawResume;
+        greetingJobContext  = jd;
       } else if (jd?.trim()) {
-        // JD only (scratch mode) — start interviewing for that role
         greetingMessage =
-          `The user wants to build a resume for this job. Start the interview to collect their experience. ` +
-          `Ask for their most recent relevant role first.\n\n` +
-          `JOB DESCRIPTION:\n${jd.slice(0, 1500)}`;
+          'System: The user wants to build a resume for this job. ' +
+          'Start the interview to collect their experience. ' +
+          'Ask for their most recent relevant role first.';
+        greetingJobContext = jd;
       } else if (rawResume?.trim()) {
-        // Resume only — analyze it
         greetingMessage =
-          `The user has uploaded their resume. Analyze it and suggest the top improvements, ` +
-          `then ask what type of role they are targeting.\n\n` +
-          `RESUME:\n${rawResume.slice(0, 3000)}`;
+          'System: The user has uploaded their resume. ' +
+          'Analyze it and suggest the top improvements, then ask what type of role they are targeting.';
+        greetingResumeData = rawResume;
       } else if (hasResumeData) {
-        // Structured resume data exists — offer to improve
         greetingMessage =
-          `I've uploaded my resume. Please review it and suggest what to improve first.`;
+          'System: I have uploaded my resume. Please review it and suggest what to improve first.';
       } else {
         greetingMessage = 'hi';
       }
@@ -461,8 +478,11 @@ export const ChatPanel: React.FC = () => {
             resume_lang:          rLang,
             conversation_history: [],
             resume_data_context:  rd ?? {},
-            ...(byokKey ? { byok_api_key: byokKey } : {}),
-            ...(jd      ? { job_description: jd }   : {}),
+            ...(byokKey             ? { byok_api_key:  byokKey            } : {}),
+            ...(jd                  ? { job_description: jd               } : {}),
+            // Dedicated heavy-context fields (Task 21) — never embedded in user_message
+            ...(greetingResumeData  ? { resume_data:   greetingResumeData } : {}),
+            ...(greetingJobContext   ? { job_context:   greetingJobContext  } : {}),
           }),
         });
 
@@ -516,6 +536,8 @@ export const ChatPanel: React.FC = () => {
     return () => {
       abortRef.current?.abort();
       if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+      // Cancel any pending background ATS sync so it doesn't fire after unmount
+      if (bgSyncTimerRef.current) clearTimeout(bgSyncTimerRef.current);
     };
   }, []);
 
@@ -709,6 +731,36 @@ export const ChatPanel: React.FC = () => {
                     } else {
                       hapticFeedback([10, 30, 10]);
                     }
+
+                    // ── Scratch-mode background ATS pulse ────────────────
+                    // Debounced 3 s: silently re-scores the whole resume once
+                    // the AI has finished updating a section.  The returned
+                    // score is written to currentAtsScore so the score ring
+                    // moves without any user action.
+                    if (bgSyncTimerRef.current) clearTimeout(bgSyncTimerRef.current);
+                    bgSyncTimerRef.current = setTimeout(async () => {
+                      const st = useAppStore.getState();
+                      // Only run for scratch-mode sessions with JD context
+                      if (st.onboardingMode !== 'scratch') return;
+                      const rdJson = JSON.stringify(st.resumeData);
+                      if (rdJson === '{}' || !st.jobDescription.trim()) return;
+                      try {
+                        const r = await fetch('/api/analyze', {
+                          method:  'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            resume_text:     rdJson,
+                            job_description: st.jobDescription,
+                          }),
+                        });
+                        if (!r.ok) return; // silent — never surface this error
+                        const d = await r.json() as { score?: number };
+                        if (typeof d.score === 'number') {
+                          // setAtsScore logs "[Store] ATS Score Sync: N"
+                          useAppStore.getState().setAtsScore(Math.min(100, d.score));
+                        }
+                      } catch { /* silent — never block the interview flow */ }
+                    }, 3000);
                   } else {
                     // ── Rejected: store reason to emit after the turn ────
                     // We don't commit the data or fire haptic.

@@ -54,6 +54,7 @@ FAIL-SAFE DESIGN:
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 import stripe                               # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -69,12 +70,29 @@ router = APIRouter(
     tags=["payments"],
 )
 
-# ─── Price constants ──────────────────────────────────────────────────────────
-# In production these would be real Stripe Price IDs from the dashboard.
-# During development / testing, we use price amounts directly in the
-# `price_data` parameter so no pre-created Price object is required.
-_PASS_AMOUNT_CENTS = 499   # $4.99 in cents — Stripe always uses lowest unit
-_PASS_CURRENCY     = "cad" # Canadian dollars (target market)
+# ─── Plan definitions ─────────────────────────────────────────────────────────
+# Fallback inline price_data used when Stripe Price IDs are not configured in
+# the environment (i.e. local dev without a Stripe account).
+# When STRIPE_PRICE_PASS_ID / STRIPE_PRICE_MONTHLY_ID are set in .env, those
+# pre-created Price objects are used instead — required for subscriptions,
+# coupons, and tax rates to work correctly.
+
+_PLANS: dict[str, dict] = {
+    "pass": {
+        "label":          "JobifAI 24-Hour Pass",
+        "description":    "Full AI interview · PDF export · ATS optimisation",
+        "amount_cents":   499,         # $4.99 CAD
+        "currency":       "cad",
+        "stripe_mode":    "payment",   # one-time charge
+    },
+    "monthly": {
+        "label":          "JobifAI Monthly Pro",
+        "description":    "Unlimited sessions · Priority AI · PDF exports",
+        "amount_cents":   1499,        # $14.99 CAD
+        "currency":       "cad",
+        "stripe_mode":    "subscription",
+    },
+}
 
 
 # ─── Request / Response Models ─────────────────────────────────────────────────
@@ -83,12 +101,16 @@ class CheckoutRequest(BaseModel):
     """
     POST /api/checkout body.
 
+    plan:          Which product to purchase.
+                     'pass'    → $4.99 one-time 24-hour access
+                     'monthly' → $14.99 / month recurring subscription
     user_email:    Pre-fills the Stripe Checkout email field.
                    Optional — Stripe allows anonymous checkout.
     success_url:   Where to redirect after successful payment.
                    Must be an absolute URL (https://your-domain.com/success).
     cancel_url:    Where to redirect if the user closes checkout.
     """
+    plan:        Literal["pass", "monthly"] = Field(default="pass", description="Product to purchase")
     user_email:  str | None = Field(default=None, description="Pre-fill email in Stripe Checkout")
     success_url: str        = Field(..., description="Redirect URL on successful payment")
     cancel_url:  str        = Field(..., description="Redirect URL on cancelled checkout")
@@ -143,58 +165,136 @@ async def create_checkout_session(
 
     stripe.api_key = settings.stripe_secret_key
 
+    plan = _PLANS[body.plan]
+
+    # ── Resolve the line_items block ──────────────────────────────────────────
+    # Priority:  pre-created Stripe Price ID  >  inline price_data fallback
+    #
+    # Using a real Price ID is required for:
+    #   • Recurring subscriptions (price_data only works with mode="payment")
+    #   • Promotion codes that reference a specific Price
+    #   • Stripe Tax / automatic tax rates
+    #
+    # For local dev without Price IDs configured, we fall back to inline
+    # price_data so the checkout still works out of the box.
+    price_id = (
+        settings.stripe_price_pass_id    if body.plan == "pass"
+        else settings.stripe_price_monthly_id
+    )
+
+    if price_id:
+        # ── Use pre-created Price ID (production / staging path) ─────────────
+        line_items: list[dict] = [{"price": price_id, "quantity": 1}]
+        logger.debug("Checkout using Price ID %s for plan=%s", price_id, body.plan)
+    else:
+        # ── Inline price_data fallback (dev without Stripe dashboard setup) ──
+        # Subscriptions (mode="subscription") require a recurring Price object —
+        # inline price_data cannot define a recurring interval without a Price ID.
+        # If no monthly price ID is configured, we warn and treat it as a payment.
+        if body.plan == "monthly":
+            logger.warning(
+                "STRIPE_PRICE_MONTHLY_ID not set — falling back to one-time $14.99 charge. "
+                "Set STRIPE_PRICE_MONTHLY_ID in .env for recurring billing."
+            )
+
+        line_items = [{
+            "price_data": {
+                "currency":     plan["currency"],
+                "unit_amount":  plan["amount_cents"],
+                "product_data": {
+                    "name":        plan["label"],
+                    "description": plan["description"],
+                },
+                # recurring is only valid when mode="subscription" AND a Price ID
+                # is used — inline price_data cannot specify recurring intervals.
+            },
+            "quantity": 1,
+        }]
+
+    # Subscriptions require mode="subscription"; one-time uses mode="payment".
+    # If we fell back to inline price_data for monthly, force payment mode.
+    checkout_mode = plan["stripe_mode"] if price_id else "payment"
+
     try:
         session = stripe.checkout.Session.create(
-            mode="payment",   # One-time payment (not a recurring subscription)
-
-            line_items=[{
-                "price_data": {
-                    "currency":     _PASS_CURRENCY,
-                    "unit_amount":  _PASS_AMOUNT_CENTS,
-                    "product_data": {
-                        "name":        "JobifAI 24-Hour Pass",
-                        "description": "Full AI interview · PDF export · ATS optimisation",
-                        "images":      [],  # Add logo URL in production
-                    },
-                },
-                "quantity": 1,
-            }],
+            mode=checkout_mode,
+            line_items=line_items,
 
             # Pre-fill email so the user doesn't have to retype it
             customer_email=body.user_email or None,
 
-            # Where to send the user after the checkout flow
+            # Redirect URLs — Stripe appends session ID to success_url
             success_url=body.success_url + "?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=body.cancel_url,
 
-            # Allow promotion codes (discount codes) entered at checkout
+            # Allow promotion / discount codes at checkout
             allow_promotion_codes=True,
 
-            # Metadata is stored on the session and echoed back in the webhook.
-            # We use it to identify which user to upgrade.
+            # Metadata is echoed back in the webhook — we use it to grant premium
             metadata={
-                "product":    "24h_pass",
+                "plan":       body.plan,
                 "user_email": body.user_email or "",
             },
         )
 
         logger.info(
-            "Checkout session created — session_id=%s  email=%s",
-            session.id,
-            body.user_email or "anonymous",
+            "Checkout session created — session_id=%s  plan=%s  mode=%s  email=%s",
+            session.id, body.plan, checkout_mode, body.user_email or "anonymous",
         )
 
         return CheckoutResponse(url=session.url, session_id=session.id)
 
-    except stripe.error.StripeError as exc:
-        # Surface the actual Stripe error to the frontend for easier debugging.
-        # The user-facing message from Stripe (exc.user_message) is safe to expose;
-        # fallback to str(exc) for errors without a user_message attribute.
-        user_msg = getattr(exc, "user_message", None) or str(exc)
-        logger.error("Stripe error creating checkout session: %s", exc)
+    except stripe.error.CardError as exc:
+        # Card declined, expired, insufficient funds, etc.
+        # user_message is always set for CardError — safe to show directly.
+        user_msg = exc.user_message or str(exc)
+        logger.warning("Stripe CardError — %s: %s", exc.code, exc)
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Card error: {user_msg}",
+        ) from exc
+
+    except stripe.error.InvalidRequestError as exc:
+        # Bad parameters — usually a misconfigured Price ID or missing field.
+        # Log the full technical detail so we can debug; return a safe message.
+        logger.error(
+            "Stripe InvalidRequestError — plan=%s price_id=%s: %s",
+            body.plan, price_id or "(inline)", exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Stripe configuration error: {exc.user_message or str(exc)} — "
+                "Check that STRIPE_PRICE_PASS_ID / STRIPE_PRICE_MONTHLY_ID are valid."
+            ),
+        ) from exc
+
+    except stripe.error.AuthenticationError as exc:
+        # Wrong API key — always a server config problem.
+        logger.error("Stripe AuthenticationError — check STRIPE_SECRET_KEY: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Stripe error: {user_msg}",
+            detail="Payment service authentication failed. Please contact support.",
+        ) from exc
+
+    except stripe.error.StripeError as exc:
+        # Catch-all for any other Stripe error (rate limit, network, etc.)
+        user_msg = getattr(exc, "user_message", None) or str(exc)
+        logger.error(
+            "Stripe error creating checkout session — plan=%s type=%s: %s",
+            body.plan, type(exc).__name__, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Payment service error: {user_msg}",
+        ) from exc
+
+    except Exception as exc:
+        # Non-Stripe exception (network, unexpected bug)
+        logger.exception("Unexpected error in checkout — plan=%s: %s", body.plan, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again.",
         ) from exc
 
 
@@ -330,7 +430,11 @@ async def _handle_checkout_completed(
         client = create_client(settings.supabase_url, settings.supabase_key)
 
         # Build the update payload
-        update: dict = {"is_premium": True}
+        plan = session.get("metadata", {}).get("plan", "pass")
+        update: dict = {
+            "is_premium": True,
+            "premium_plan": plan,   # 'pass' or 'monthly' — useful for feature gating
+        }
         if customer_id:
             update["stripe_customer_id"] = customer_id
 

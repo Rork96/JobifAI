@@ -156,22 +156,100 @@ function dispatchInsertSkill(gap: string) {
   window.dispatchEvent(new CustomEvent('jobifai:insertSkill', { detail: { gap } }));
 }
 
+/**
+ * Dispatches a guided coaching prompt into the chat input when a ghost keyword
+ * is clicked.  The prompt instructs the user to surface a real-world example
+ * rather than blindly inserting the keyword — preserving resume authenticity.
+ *
+ * Uses the same `jobifai:insertSkill` event channel as the checklist chips so
+ * ChatPanel only needs one listener.
+ */
+function dispatchGhostKeywordPrompt(keyword: string): void {
+  window.dispatchEvent(
+    new CustomEvent('jobifai:insertSkill', {
+      detail: {
+        gap: `I see that '${keyword}' is a missing keyword. Can you help me find a specific example from my experience to include it?`,
+      },
+    }),
+  );
+}
+
+// ── Ghost Skill Chip ──────────────────────────────────────────────────────────
+/**
+ * Renders a missing ATS keyword as a dashed "ghost" placeholder injected inline
+ * into the Skills section of the resume canvas.
+ *
+ * BEHAVIOUR:
+ *   • Visually distinct from real skills — dashed border, muted slate tone.
+ *   • Shows a tiny "+X%" badge computed deterministically from the keyword hash
+ *     so the value is stable across renders but feels unique per-keyword.
+ *   • Clicking fires a guided coaching prompt into the chat input — does NOT
+ *     write the keyword directly into resumeData (that would be dishonest).
+ *   • Framer Motion scale-spring on hover/tap for tactile feedback.
+ *
+ * ROBUSTNESS:
+ *   • Receives only a `keyword: string` — no complex object shape to validate.
+ *   • `useCallback` memoises the click handler so the chip never re-renders
+ *     unless the keyword itself changes.
+ */
+const GhostSkillChip: React.FC<{ keyword: string }> = ({ keyword }) => {
+  const scoreIncrease = getGapValue(keyword);  // deterministic 3–7 from existing hash fn
+
+  const handleClick = useCallback(() => {
+    initAudioContext();
+    dispatchGhostKeywordPrompt(keyword);
+  }, [keyword]);
+
+  return (
+    <motion.button
+      type="button"
+      onClick={handleClick}
+      className="text-xs text-slate-300 border border-slate-200 border-dashed rounded px-2 ml-1 cursor-pointer hover:bg-slate-50 transition inline-flex items-center gap-1.5"
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      title={`"${keyword}" is a missing keyword — click to get AI help adding it authentically`}
+    >
+      <span>{keyword}</span>
+      {/* Score badge — visually separate from the keyword text */}
+      <span
+        className="text-[9px] font-bold text-slate-400 bg-slate-100 border border-slate-200 rounded px-1 py-0.5 leading-none tabular-nums"
+        aria-label={`potential score increase: +${scoreIncrease} percent`}
+      >
+        +{scoreIncrease}%
+      </span>
+    </motion.button>
+  );
+};
+
 const SkillGapChecklist: React.FC<{
   gaps:          string[];
   missingSkills: Array<{ skill: string; impact_percentage: number }>;
   matchedSkills: string[];
   resumeData:    Partial<ResumeData>;
-}> = ({ gaps, missingSkills, matchedSkills, resumeData }) => {
+  // ── Iron Logic overrides (Task 19) ───────────────────────────────────────
+  // When present, these come from analysisResult and take strict precedence
+  // over the legacy skillGaps / matchedSkills arrays.
+  foundKeywords?:   string[];   // green ✅ chips  — analysisResult.foundKeywords
+  missingKeywords?: string[];   // red ❌ chips    — analysisResult.missingKeywords
+                                // (empty array [] triggers the Triumph state)
+}> = ({ gaps, missingSkills, matchedSkills, resumeData, foundKeywords, missingKeywords }) => {
   const [isOpen, setIsOpen] = useState(true);
   const prevSatisfied = useRef<Set<string>>(new Set());
 
-  // Build a lookup map: skill → impact_percentage (from real backend data)
+  // ── Resolve effective data sources ────────────────────────────────────────
+  // If `analysisResult` provided the Iron Logic arrays, use those.
+  // Otherwise fall back to the legacy store fields (scratch-mode / old flow).
+  const effectiveGaps    = missingKeywords ?? gaps;
+  const effectiveMatched = foundKeywords   ?? matchedSkills;
+
+  // Build a lookup map: skill → impact_percentage (from legacy backend data).
+  // Not available in the new analysisResult contract — we use getGapValue() instead.
   const impactMap = new Map(missingSkills.map((s) => [s.skill.toLowerCase(), s.impact_percentage]));
 
-  // Detect which gaps are already covered in the resume
-  const resumeText = JSON.stringify(resumeData).toLowerCase();
+  // Detect which gaps are already covered in the resume (live satisfaction check)
+  const resumeText    = JSON.stringify(resumeData).toLowerCase();
   const satisfiedGaps = new Set(
-    gaps.filter((g) => resumeText.includes(g.toLowerCase())),
+    effectiveGaps.filter((g) => resumeText.includes(g.toLowerCase())),
   );
 
   // Play pop sound when a gap transitions from unsatisfied → satisfied
@@ -185,14 +263,20 @@ const SkillGapChecklist: React.FC<{
       }
     }
     prevSatisfied.current = satisfiedGaps;
-  });   // runs after every render — intentional (checks newly satisfied gaps)
+  });   // intentional: runs every render to detect newly-satisfied gaps
 
-  if (gaps.length === 0 && matchedSkills.length === 0) return null;
+  // Nothing to show at all
+  if (effectiveGaps.length === 0 && effectiveMatched.length === 0) return null;
 
-  const pendingGaps    = gaps.filter((g) => !satisfiedGaps.has(g));
-  const completedGaps  = gaps.filter((g) =>  satisfiedGaps.has(g));
-  const progress       = completedGaps.length;
-  const total          = gaps.length;
+  const pendingGaps   = effectiveGaps.filter((g) => !satisfiedGaps.has(g));
+  const completedGaps = effectiveGaps.filter((g) =>  satisfiedGaps.has(g));
+  const progress      = completedGaps.length;
+  const total         = effectiveGaps.length;
+
+  // ── Triumph condition ─────────────────────────────────────────────────────
+  // `missingKeywords` is only defined when we have a real analysisResult.
+  // An empty array means the backend found ZERO gaps — perfect keyword coverage.
+  const isTriumph = missingKeywords !== undefined && missingKeywords.length === 0;
 
   return (
     <motion.div
@@ -201,36 +285,49 @@ const SkillGapChecklist: React.FC<{
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: 'spring', stiffness: 300, damping: 26 }}
     >
-      {/* Header row */}
+      {/* ── Header row ──────────────────────────────────────────────────────── */}
       <button
         onClick={() => setIsOpen((v) => !v)}
         className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <Zap className="w-3.5 h-3.5 text-orange-500" />
-          <span className="text-xs font-semibold text-gray-800">
-            ATS Gaps
-          </span>
-          <span className="text-[10px] font-medium text-gray-500">
-            {progress}/{total} resolved
-          </span>
+          {isTriumph ? (
+            <>
+              <span className="text-sm leading-none">🏆</span>
+              <span className="text-xs font-semibold text-emerald-700">
+                Stellar Match
+              </span>
+            </>
+          ) : (
+            <>
+              <Zap className="w-3.5 h-3.5 text-orange-500" />
+              <span className="text-xs font-semibold text-gray-800">
+                ATS Gaps
+              </span>
+              <span className="text-[10px] font-medium text-gray-500">
+                {progress}/{total} resolved
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Mini progress bar */}
-          <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
-            <motion.div
-              className="h-full bg-gradient-to-r from-orange-500 to-emerald-400 rounded-full"
-              animate={{ width: `${(progress / total) * 100}%` }}
-              transition={{ duration: 0.5, ease: 'easeOut' }}
-            />
-          </div>
+          {/* Mini progress bar — only relevant when gaps exist */}
+          {!isTriumph && total > 0 && (
+            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+              <motion.div
+                className="h-full bg-gradient-to-r from-orange-500 to-emerald-400 rounded-full"
+                animate={{ width: `${(progress / total) * 100}%` }}
+                transition={{ duration: 0.5, ease: 'easeOut' }}
+              />
+            </div>
+          )}
           <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
             <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
           </motion.div>
         </div>
       </button>
 
-      {/* Collapsible gap list */}
+      {/* ── Collapsible body ────────────────────────────────────────────────── */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -241,8 +338,32 @@ const SkillGapChecklist: React.FC<{
             className="overflow-hidden"
           >
             <div className="px-4 pb-3 space-y-2">
-              {/* Missing / pending gaps — clickable chips */}
-              {pendingGaps.length > 0 && (
+
+              {/* ── Triumph empty state ────────────────────────────────────── */}
+              {/* Rendered ONLY when analysisResult.missingKeywords is [] — i.e.
+                  the backend found ZERO gaps.  No phantom empty space, no header. */}
+              {isTriumph && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.97 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 340, damping: 26 }}
+                  className="flex items-start gap-3 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-xl px-3.5 py-3"
+                >
+                  <span className="text-xl flex-shrink-0 mt-0.5" role="img" aria-label="trophy">🏆</span>
+                  <div>
+                    <p className="text-xs font-semibold text-emerald-800 leading-snug">
+                      Stellar Match!
+                    </p>
+                    <p className="text-[11px] text-emerald-700 leading-snug mt-0.5">
+                      Your resume hits all the critical keywords for this job description.
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── Missing / pending gaps — clickable chips ───────────────── */}
+              {/* Only rendered when there ARE gaps (triumph state hides this) */}
+              {!isTriumph && pendingGaps.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {pendingGaps.map((gap) => (
                     <motion.button
@@ -258,13 +379,15 @@ const SkillGapChecklist: React.FC<{
                     >
                       <span className="w-3 h-3 rounded border border-orange-400 flex-shrink-0" />
                       {gap}
-                      <span className="text-orange-500 font-semibold">+{impactMap.get(gap.toLowerCase()) ?? getGapValue(gap)}%</span>
+                      <span className="text-orange-500 font-semibold">
+                        +{impactMap.get(gap.toLowerCase()) ?? getGapValue(gap)}%
+                      </span>
                     </motion.button>
                   ))}
                 </div>
               )}
 
-              {/* Resolved gaps — checked off */}
+              {/* ── Resolved gaps — checked off ────────────────────────────── */}
               {completedGaps.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {completedGaps.map((gap) => (
@@ -288,25 +411,27 @@ const SkillGapChecklist: React.FC<{
                 </div>
               )}
 
-              {/* Matched skills — already in the resume */}
-              {matchedSkills.length > 0 && (
+              {/* ── Found / matched keywords — green chips ─────────────────── */}
+              {/* Rendered regardless of triumph state — proves the analysis ran */}
+              {effectiveMatched.length > 0 && (
                 <div>
                   <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
-                    Already matched
+                    {isTriumph ? 'All keywords matched' : 'Already matched'}
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {matchedSkills.map((skill) => (
+                    {effectiveMatched.map((skill) => (
                       <span
                         key={skill}
-                        className="flex items-center gap-1 text-[11px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-2.5 py-1"
+                        className="flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1"
                       >
-                        <Check className="w-2.5 h-2.5 text-slate-400" />
+                        <Check className="w-2.5 h-2.5 text-emerald-500" />
                         {skill}
                       </span>
                     ))}
                   </div>
                 </div>
               )}
+
             </div>
           </motion.div>
         )}
@@ -352,7 +477,7 @@ const HoverableBullet: React.FC<HoverableBulletProps> = ({
           oldText:  text,
           newText:  editValue.trim(),
           predictedScoreIncrease: 0,
-          baselineScore: state.currentAtsScore ?? 0,
+          baselineScore: state.currentAtsScore,
         },
       }));
       applyFieldEdit();
@@ -581,7 +706,36 @@ export const DocumentPreview: React.FC = () => {
   const skillGaps          = useAppStore((s) => s.skillGaps);
   const matchedSkills      = useAppStore((s) => s.matchedSkills);
   const missingSkills      = useAppStore((s) => s.missingSkills);
+  // Iron Logic (Task 19) — single source of truth when analysis has run
+  const analysisResult     = useAppStore((s) => s.analysisResult);
   const pendingDiff        = useAppStore((s) => s.pendingDiff);
+
+  // ── Ghost keywords — inline skill-section injection ──────────────────────
+  // Derived from `analysisResult.missingKeywords` after filtering out any
+  // keyword already present in `resumeData.skills` (case-insensitive).
+  //
+  // Guard layers:
+  //   1. `analysisResult` may be null  → early-return empty array
+  //   2. `missingKeywords` must be a real array (defensive against bad API shapes)
+  //   3. Each keyword must be a non-empty string
+  //   4. Case-insensitive deduplicate against the current skills list
+  const ghostKeywords: string[] = (() => {
+    const missing = analysisResult?.missingKeywords;
+    if (!Array.isArray(missing) || missing.length === 0) return [];
+
+    const existingLower = new Set(
+      (resumeData.skills ?? [])
+        .filter((s): s is string => typeof s === 'string')
+        .map((s) => s.toLowerCase()),
+    );
+
+    return missing.filter(
+      (k): k is string =>
+        typeof k === 'string' &&
+        k.trim().length > 0 &&
+        !existingLower.has(k.toLowerCase()),
+    );
+  })();
   const jobDescription     = useAppStore((s) => s.jobDescription);
   const setPendingDiff     = useAppStore((s) => s.setPendingDiff);
 
@@ -662,7 +816,7 @@ export const DocumentPreview: React.FC = () => {
 
   // ── Magic Rewrite handler ─────────────────────────────────────────────────
   const handleMagic = useCallback(async (fieldPath: string, oldText: string, section: string) => {
-    const baselineScore = useAppStore.getState().currentAtsScore ?? 0;
+    const baselineScore = useAppStore.getState().currentAtsScore;
     try {
       const res = await fetch('/api/rewrite-section', {
         method:  'POST',
@@ -702,7 +856,7 @@ export const DocumentPreview: React.FC = () => {
         <div className="flex items-center gap-3">
           {/* Animated ATS Score Ring */}
           <AnimatePresence>
-            {currentAtsScore !== null && (
+            {currentAtsScore > 0 && (
               <motion.div
                 key="ats-ring"
                 initial={{ opacity: 0, scale: 0.8 }}
@@ -739,14 +893,21 @@ export const DocumentPreview: React.FC = () => {
       </div>
 
       {/* ── Skill Gap Checklist ────────────────────────────────────────────── */}
+      {/* Visible when:
+           • Iron Logic path — analysisResult is non-null (always has data to show)
+           • Legacy path     — old skillGaps or matchedSkills arrays have content
+          hasContent guard keeps it hidden on the blank "start chatting" placeholder. */}
       <AnimatePresence>
-        {(skillGaps.length > 0 || matchedSkills.length > 0) && hasContent && (
+        {(analysisResult !== null || skillGaps.length > 0 || matchedSkills.length > 0) && hasContent && (
           <SkillGapChecklist
             key="skill-gaps"
             gaps={skillGaps}
             missingSkills={missingSkills}
             matchedSkills={matchedSkills}
             resumeData={resumeData}
+            // Iron Logic overrides — undefined when no analysisResult yet
+            foundKeywords={analysisResult?.foundKeywords}
+            missingKeywords={analysisResult?.missingKeywords}
           />
         )}
       </AnimatePresence>
@@ -922,11 +1083,14 @@ export const DocumentPreview: React.FC = () => {
                   )}
 
                   {/* ── Skills ────────────────────────────────────────── */}
-                  {(resumeData.skills?.length ?? 0) > 0 && (
+                  {/* Show section if there are real skills OR ghost keywords to inject */}
+                  {((resumeData.skills?.length ?? 0) > 0 || ghostKeywords.length > 0) && (
                     <motion.section variants={sectionVariants}>
                       <SectionHeading>Skills</SectionHeading>
-                      <div className="flex flex-wrap gap-1.5">
-                        {resumeData.skills!.map((skill) => {
+                      <div className="flex flex-wrap gap-1.5 items-center">
+
+                        {/* ── Real skills — confirmed in resumeData ─────── */}
+                        {(resumeData.skills ?? []).map((skill) => {
                           const key = `skill:${skill}`;
                           const isFlashing = flashingIds.has(key);
                           return (
@@ -951,6 +1115,33 @@ export const DocumentPreview: React.FC = () => {
                             </motion.span>
                           );
                         })}
+
+                        {/* ── Ghost keyword injections ──────────────────────
+                            Each chip is a dashed placeholder for a keyword the
+                            ATS analysis flagged as missing.  Clicking triggers
+                            a guided coaching prompt in the chat — it does NOT
+                            write the keyword directly into the resume.
+                            AnimatePresence handles staggered entry/exit so chips
+                            appear smoothly as analysisResult loads. */}
+                        <AnimatePresence>
+                          {ghostKeywords.map((keyword, idx) => (
+                            <motion.div
+                              key={`ghost:${keyword}`}
+                              initial={{ opacity: 0, scale: 0.75 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.75 }}
+                              transition={{
+                                type: 'spring',
+                                stiffness: 360,
+                                damping: 24,
+                                delay: idx * 0.06,   // stagger per ghost chip
+                              }}
+                            >
+                              <GhostSkillChip keyword={keyword} />
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+
                       </div>
                     </motion.section>
                   )}

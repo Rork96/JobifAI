@@ -54,6 +54,19 @@ class Settings(BaseSettings):
         default="",
         description="whsec_... from Stripe dashboard; required in prod.",
     )
+    # Pre-created Stripe Price IDs (from the Stripe dashboard Products page).
+    # Using a Price ID is more reliable than inline price_data:
+    #   • The product name / currency / trial period are locked in the dashboard.
+    #   • Stripe Connect, coupons, and tax rates attach to the Price object.
+    # Leave as "" to fall back to inline price_data for local dev without prices.
+    stripe_price_pass_id: str = Field(
+        default="",
+        description="Stripe Price ID for the $4.99 / 24-hour pass (price_1xxx)",
+    )
+    stripe_price_monthly_id: str = Field(
+        default="",
+        description="Stripe Price ID for the $14.99 / monthly plan (price_1xxx)",
+    )
 
     # ── Pydantic v2 model config ───────────────────────────────────────────────
     # env_file tells BaseSettings to load .env automatically.

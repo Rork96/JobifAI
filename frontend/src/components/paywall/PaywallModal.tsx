@@ -135,8 +135,9 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
   const [loadingPlan,   setLoadingPlan]   = useState<string | null>(null);
 
   // Grab the user's email so we can pre-fill the Stripe Checkout form
-  const userEmail    = useAppStore((s) => s.user?.email);
-  const realAtsScore = useAppStore((s) => s.realAtsScore);
+  const userEmail       = useAppStore((s) => s.user?.email);
+  // currentAtsScore is the single source of truth — always a number (default 0)
+  const currentAtsScore = useAppStore((s) => s.currentAtsScore);
 
   // ── Triple-click easter egg ──────────────────────────────────────────────────
   const clickCountRef  = useRef(0);
@@ -159,14 +160,26 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
   }, []);
 
   // ── Checkout handler ─────────────────────────────────────────────────────────
+  // Placeholder: redirects to Stripe Checkout (Task 5 will wire the full
+  // backend webhook + entitlement flow).  Separated from redirectToStripeCheckout
+  // so we can swap the implementation without touching the component's call-sites.
   const handleCheckout = useCallback(async (planKey: string) => {
     setCheckoutError('');
     setLoadingPlan(planKey);
     const error = await redirectToStripeCheckout(userEmail ?? undefined);
-    // If we reach here the redirect didn't happen (error case)
+    // If we reach here the redirect didn't happen (network error / bad response)
     setLoadingPlan(null);
     if (error) setCheckoutError(error);
   }, [userEmail]);
+
+  // ── DEV unlock ───────────────────────────────────────────────────────────────
+  // Strictly dev-only: bypasses Stripe so engineers can test the workspace
+  // without a live payment session.  import.meta.env.DEV is replaced with
+  // `false` by Vite at production build time — the button is tree-shaken out.
+  const handleDevUnlock = useCallback(() => {
+    useAppStore.getState().setIsPremium(true);
+    onAccessGranted();
+  }, [onAccessGranted]);
 
   // ── Plan data ────────────────────────────────────────────────────────────────
   const plans = [
@@ -222,19 +235,19 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
           <div className="px-8 pt-8 pb-6 text-center border-b border-slate-800">
             {/* ATS score pill */}
             <div className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-5 ${
-              (realAtsScore ?? 34) >= 80
+              currentAtsScore >= 80
                 ? 'bg-emerald-500/15 border border-emerald-500/30'
-                : (realAtsScore ?? 34) >= 50
+                : currentAtsScore >= 50
                   ? 'bg-amber-500/15 border border-amber-500/30'
                   : 'bg-red-500/15 border border-red-500/30'
             }`}>
               <span className={`w-2 h-2 rounded-full animate-pulse ${
-                (realAtsScore ?? 34) >= 80 ? 'bg-emerald-500' : (realAtsScore ?? 34) >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                currentAtsScore >= 80 ? 'bg-emerald-500' : currentAtsScore >= 50 ? 'bg-amber-500' : 'bg-red-500'
               }`} />
               <span className={`text-xs font-semibold tracking-wide uppercase ${
-                (realAtsScore ?? 34) >= 80 ? 'text-emerald-400' : (realAtsScore ?? 34) >= 50 ? 'text-amber-400' : 'text-red-400'
+                currentAtsScore >= 80 ? 'text-emerald-400' : currentAtsScore >= 50 ? 'text-amber-400' : 'text-red-400'
               }`}>
-                ATS Score: {realAtsScore ?? 34} / 100 — {(realAtsScore ?? 34) < 50 ? 'Below hiring threshold' : (realAtsScore ?? 34) <= 80 ? 'Needs improvement' : 'Strong match'}
+                ATS Score: {currentAtsScore} / 100 — {currentAtsScore < 50 ? 'Below hiring threshold' : currentAtsScore <= 80 ? 'Needs improvement' : 'Strong match'}
               </span>
             </div>
 
@@ -317,6 +330,23 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
             <p className="text-slate-600 text-xs mt-2">
               1 resume · ATS score only · No PDF export
             </p>
+
+            {/* ── DEV bypass — tree-shaken out in production builds ─────────── */}
+            {import.meta.env.DEV && (
+              <div className="mt-6 pt-5 border-t border-dashed border-slate-700/60">
+                <button
+                  type="button"
+                  onClick={handleDevUnlock}
+                  className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10 px-4 py-2.5 text-xs font-mono font-semibold text-emerald-400 transition-colors"
+                >
+                  <span className="text-emerald-500">⚙</span>
+                  [DEV] Unlock PDF — skip Stripe
+                </button>
+                <p className="text-slate-600 text-[10px] mt-1.5">
+                  Only visible in <code className="text-slate-500">import.meta.env.DEV</code> — not rendered in production builds
+                </p>
+              </div>
+            )}
           </div>
         </motion.div>
       </motion.div>

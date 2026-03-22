@@ -99,11 +99,14 @@ class InterviewRequest(BaseModel):
     frontend and backend — it should be obvious what each field does.
     """
 
-    # The user's current message (what they typed in the ChatPanel input)
+    # The user's current message (what they typed in the ChatPanel input).
+    # max_length removed: the initial greeting turn concatenates the system
+    # instruction + resume + JD into this field, which can exceed 4 k chars.
+    # Gemini Flash 2.5 supports ~1 M tokens — 20 k chars is safe.
     user_message: str = Field(
         ...,
         min_length=1,
-        max_length=4000,  # ~3k tokens, well within Gemini Flash context window
+        max_length=20_000,
         description="The user's latest message to Mac.",
     )
 
@@ -163,6 +166,29 @@ class InterviewRequest(BaseModel):
         max_length=10_000,
         description="Optional: target job posting text.  Mac uses this to guide "
                     "interview questions toward the JD's specific skill requirements.",
+    )
+
+    # ── Dedicated context fields (Task 21) ────────────────────────────────────
+    # These carry the heavy text payloads that used to be crammed into
+    # user_message, causing 422 errors when the combined text exceeded 4 000 chars.
+    # Both are injected as a bracketed system note at the top of the user turn
+    # (same pattern as resume_data_context above) so Gemini sees the full text
+    # without the frontend needing to truncate it.
+
+    job_context: str | None = Field(
+        default=None,
+        max_length=15_000,
+        description="Optional: the full job description text passed as context for "
+                    "the initial analysis turn.  Kept separate from user_message so "
+                    "the human-visible instruction stays concise.",
+    )
+
+    resume_data: str | None = Field(
+        default=None,
+        max_length=15_000,
+        description="Optional: the user's uploaded resume text (plain text or JSON "
+                    "serialisation of structured resume data) passed as context for "
+                    "the initial analysis turn.",
     )
 
     model_config = {"json_schema_extra": {
@@ -264,20 +290,32 @@ async def interview_turn(
         for msg in body.conversation_history
     ]
 
-    # Build the user message, optionally prepending resume context.
-    # This gives the model awareness of previously extracted data without
-    # polluting the conversation history with internal JSON blobs.
+    # Build the user message, optionally prepending all available context.
+    # Heavy payloads (resume text, JD) arrive in dedicated fields so that
+    # user_message stays concise and never trips the old 4 000-char limit.
+    # All context is bracketed so the system prompt can instruct Mac to treat
+    # [System context …] blocks as internal notes, not user speech.
     user_message = body.user_message
+    context_parts: list[str] = []
+
     if body.resume_data_context:
-        context_hint = (
-            f"[System context — do NOT read this to the user] "
-            f"Previously extracted resume data: {body.resume_data_context}"
+        context_parts.append(
+            f"Previously extracted resume data (structured): {body.resume_data_context}"
         )
-        # Prepend context as a system note inside the user turn.
-        # Gemini treats this as part of the user message, but the system
-        # prompt instructs Mac to treat bracketed [System context ...] as
-        # internal notes.
-        user_message = f"{context_hint}\n\nUser message: {user_message}"
+
+    if body.resume_data:
+        context_parts.append(
+            f"User's uploaded resume text:\n{body.resume_data}"
+        )
+
+    if body.job_context:
+        context_parts.append(
+            f"Target job description:\n{body.job_context}"
+        )
+
+    if context_parts:
+        system_note = "[System context — do NOT read this to the user]\n" + "\n\n".join(context_parts)
+        user_message = f"{system_note}\n\nUser message: {user_message}"
 
     logger.info(
         "Interview turn — step=%s lang=%s→%s history_len=%d byok=%s jd=%s",

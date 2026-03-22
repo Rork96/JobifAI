@@ -35,6 +35,7 @@ import type {
   ResumeData,
   ExperienceEntry,
   EducationEntry,
+  ATSAnalysisResponse,
 } from '@/types';
 import { INTERVIEW_STEP_ORDER } from '@/types';
 
@@ -83,9 +84,16 @@ interface AuthSlice {
    */
   isAuthLoading: boolean;
 
+  /**
+   * True while POST /api/user/save-progress is in-flight.
+   * Used by the status bar to show "Saving…" vs "Saved".
+   */
+  isSaving: boolean;
+
   setUser:          (user: User | null) => void;
   setIsPremium:     (premium: boolean) => void;
   setIsAuthLoading: (loading: boolean) => void;
+  setIsSaving:      (saving: boolean) => void;
 
   /** Called on sign-out — wipes all auth state. */
   clearAuth: () => void;
@@ -153,8 +161,11 @@ interface OnboardingSlice {
    * Initialized from `realAtsScore` on onboarding completion.
    * Bumped by `bumpAtsScore(delta)` each time an edit is approved by the scorer.
    * Drives the animated count-up/down number in the header.
+   *
+   * SINGLE SOURCE OF TRUTH — always a number (default 0).
+   * Every score-bearing response must write here via setAtsScore().
    */
-  currentAtsScore: number | null;
+  currentAtsScore: number;
 
   /**
    * Keywords present in the JD but absent from the resume.
@@ -170,10 +181,51 @@ interface OnboardingSlice {
   /** Missing skills with real impact percentages (from /api/ats-score missing_skills). */
   missingSkills: Array<{ skill: string; impact_percentage: number }>;
 
+  // ── Atomic analysis state (Iron Logic — Task 19) ──────────────────────────
+  /**
+   * True while POST /api/analyze is in-flight.
+   * Drives the loading state on the Step 3 "proceed" button — the user
+   * cannot enter the workspace until this is false AND analysisResult is set.
+   */
+  isAnalyzing:   boolean;
+
+  /**
+   * Non-null when /api/analyze returns a non-2xx or throws.
+   * Displayed as an inline error on Step 3; cleared on the next analysis attempt.
+   */
+  analysisError: string | null;
+
+  /**
+   * The full ATSAnalysisResponse returned by /api/analyze.
+   * This is the SINGLE source of truth for:
+   *   • score          → ATS score ring
+   *   • foundKeywords  → green ✅ chips
+   *   • missingKeywords → red ❌ chips
+   *   • macMessage     → Mac's first chat message (never built client-side)
+   *
+   * Null until a successful /api/analyze call completes.
+   * Validated at write-time with isATSAnalysisResponse() in OnboardingFlow.
+   */
+  analysisResult: ATSAnalysisResponse | null;
+
+  setIsAnalyzing:    (v: boolean) => void;
+  setAnalysisError:  (err: string | null) => void;
+  /**
+   * Atomic write: sets analysisResult AND syncs currentAtsScore in one
+   * Zustand transaction.  Always call this — never set analysisResult directly.
+   */
+  setAnalysisResult: (result: ATSAnalysisResponse | null) => void;
+
   setOnboardingMode:     (mode: 'upload' | 'scratch') => void;
   setUploadedResumeText: (text: string) => void;
   setJobDescription:     (jd: string) => void;
   setRealAtsScore:       (score: number) => void;
+  /**
+   * The canonical setter for the live ATS score.
+   * Logs to console (verify pulse is active) and updates currentAtsScore.
+   * Prefer this over setCurrentAtsScore for all external callers.
+   */
+  setAtsScore:           (score: number) => void;
   setCurrentAtsScore:    (score: number) => void;
   /** Add `delta` (±1–5) to the live ATS score, clamped to [0, 100]. */
   bumpAtsScore:          (delta: number) => void;
@@ -313,10 +365,12 @@ const createAuthSlice: StateCreator<AppStore, [], [], AuthSlice> = (set) => ({
   user:          null,
   isPremium:     false,
   isAuthLoading: true,  // Start true — we verify session on mount before showing UI
+  isSaving:      false,
 
   setUser:          (user)      => set({ user }),
   setIsPremium:     (isPremium) => set({ isPremium }),
   setIsAuthLoading: (isAuthLoading) => set({ isAuthLoading }),
+  setIsSaving:      (isSaving) => set({ isSaving }),
 
   clearAuth: () => set({ user: null, isPremium: false, isAuthLoading: false }),
 });
@@ -362,11 +416,32 @@ const createLangSlice: StateCreator<AppStore, [], [], LangSlice> = (set) => {
 
 // ── Onboarding Slice Factory ───────────────────────────────────────────────────
 const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (set) => ({
+  // ── Atomic analysis state ──────────────────────────────────────────────────
+  isAnalyzing:   false,
+  analysisError: null,
+  analysisResult: null,
+
+  setIsAnalyzing:   (isAnalyzing)   => set({ isAnalyzing }),
+  setAnalysisError: (analysisError) => set({ analysisError }),
+
+  // Atomic write: setting analysisResult also syncs currentAtsScore in ONE
+  // Zustand transaction so no component ever sees analysisResult with a stale score.
+  setAnalysisResult: (analysisResult) => {
+    if (analysisResult !== null) {
+      console.log('[Store] ATS Score Sync:', analysisResult.score);
+    }
+    set({
+      analysisResult,
+      ...(analysisResult !== null ? { currentAtsScore: analysisResult.score } : {}),
+    });
+  },
+
+  // ── Onboarding fields ──────────────────────────────────────────────────────
   onboardingMode:      null,
   uploadedResumeText:  '',
   jobDescription:      '',
   realAtsScore:        null,
-  currentAtsScore:     null,
+  currentAtsScore:     0,   // ← SINGLE SOURCE OF TRUTH — always a number, never null
   skillGaps:           [],
   matchedSkills:       [],
   missingSkills:       [],
@@ -374,17 +449,33 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
   setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
   setJobDescription:     (jobDescription)     => set({ jobDescription }),
+
   // Setting realAtsScore also initialises currentAtsScore (the live display value)
-  setRealAtsScore:       (score)              => set({ realAtsScore: score, currentAtsScore: score }),
-  setCurrentAtsScore:    (score)              => set({ currentAtsScore: score }),
+  setRealAtsScore: (score) => {
+    console.log('[Store] ATS Score Sync:', score);
+    set({ realAtsScore: score, currentAtsScore: score });
+  },
+
+  // Canonical public setter — preferred over setCurrentAtsScore for all callers
+  setAtsScore: (score) => {
+    console.log('[Store] ATS Score Sync:', score);
+    set({ currentAtsScore: score });
+  },
+
+  // Internal alias kept for backward-compat with existing call-sites
+  setCurrentAtsScore: (score) => {
+    console.log('[Store] ATS Score Sync:', score);
+    set({ currentAtsScore: score });
+  },
+
+  // currentAtsScore is now always a number — no null guard needed
   bumpAtsScore: (delta) => set((state) => ({
-    currentAtsScore: state.currentAtsScore !== null
-      ? Math.min(100, Math.max(0, state.currentAtsScore + delta))
-      : null,
+    currentAtsScore: Math.min(100, Math.max(0, state.currentAtsScore + delta)),
   })),
-  setSkillGaps:          (skillGaps)          => set({ skillGaps }),
-  setMatchedSkills:      (matchedSkills)      => set({ matchedSkills }),
-  setMissingSkills:      (missingSkills)      => set({ missingSkills }),
+
+  setSkillGaps:     (skillGaps)     => set({ skillGaps }),
+  setMatchedSkills: (matchedSkills) => set({ matchedSkills }),
+  setMissingSkills: (missingSkills) => set({ missingSkills }),
 });
 
 // ── Interview Slice Factory ────────────────────────────────────────────────────
