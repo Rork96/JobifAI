@@ -580,7 +580,11 @@ export const ChatPanel: React.FC = () => {
     const step         = currentStep;
     const langUser     = userLang;
     const langResume   = resumeLang;
-    const ctxData      = resumeData;
+    // Always read resumeData directly from the store (not from the React
+    // subscription closure) so we send the absolute latest accumulated state.
+    // This matters after a data_extract update in the same event-loop tick
+    // where the React subscription may not have re-rendered yet.
+    const ctxData = useAppStore.getState().resumeData;
 
     // 1. Haptic feedback on send — single 50 ms pulse signals "message sent"
     hapticFeedback([50]);

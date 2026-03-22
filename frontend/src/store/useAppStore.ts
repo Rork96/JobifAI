@@ -347,6 +347,76 @@ type AppStore = AuthSlice & LangSlice & OnboardingSlice & InterviewSlice;
 export type { AppStore };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DEEP MERGE UTILITY
+//
+// updateResumeData uses this INSTEAD of a flat spread ({ ...base, ...patch })
+// to prevent AI partial updates from destructively overwriting array fields.
+//
+// Problem the flat spread caused (THE CONTEXT-LOSS BUG):
+//   state.resumeData.experiences = [entry1, entry2]
+//   update = { experiences: [entry3] }           ← AI adds one new entry
+//   { ...state.resumeData, ...update }            ← REPLACES array with [entry3]
+//   → entry1 and entry2 are gone forever ❌
+//
+// Rules this function applies per field:
+//   targetTitle / summary  → straight replace (primitives)
+//   skills                 → union, deduplicated case-insensitively
+//   experiences            → merge by id; entries without id get one assigned
+//   education              → same merge-by-id strategy
+// ─────────────────────────────────────────────────────────────────────────────
+
+function deepMergeResumeData(
+  base:  Partial<ResumeData>,
+  patch: Partial<ResumeData>,
+): Partial<ResumeData> {
+  const merged: Partial<ResumeData> = { ...base };
+
+  // ── Primitives ────────────────────────────────────────────────────────────
+  if (patch.targetTitle !== undefined) merged.targetTitle = patch.targetTitle;
+  if (patch.summary     !== undefined) merged.summary     = patch.summary;
+
+  // ── Skills: union deduplicated (case-insensitive) ─────────────────────────
+  if (patch.skills !== undefined) {
+    const seen    = new Set((base.skills ?? []).map((s) => s.toLowerCase()));
+    const unified = [...(base.skills ?? [])];
+    for (const skill of patch.skills) {
+      if (!seen.has(skill.toLowerCase())) {
+        unified.push(skill);
+        seen.add(skill.toLowerCase());
+      }
+    }
+    merged.skills = unified;
+  }
+
+  // ── Experiences: merge-by-id; no id = new entry, gets one assigned ────────
+  if (patch.experiences !== undefined) {
+    const existingMap = new Map(
+      (base.experiences ?? []).map((e) => [e.id, e]),
+    );
+    for (const entry of patch.experiences) {
+      // Generate a stable id for AI-extracted entries that arrive without one
+      const id = entry.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      existingMap.set(id, { ...(existingMap.get(id) ?? {}), ...entry, id });
+    }
+    merged.experiences = Array.from(existingMap.values());
+  }
+
+  // ── Education: same merge-by-id ───────────────────────────────────────────
+  if (patch.education !== undefined) {
+    const existingMap = new Map(
+      (base.education ?? []).map((e) => [e.id, e]),
+    );
+    for (const entry of patch.education) {
+      const id = entry.id || `edu_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      existingMap.set(id, { ...(existingMap.get(id) ?? {}), ...entry, id });
+    }
+    merged.education = Array.from(existingMap.values());
+  }
+
+  return merged;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SLICE FACTORIES
 //
 // Each factory receives Zustand's `set` and `get` functions and returns the
@@ -521,8 +591,10 @@ const createInterviewSlice: StateCreator<AppStore, [], [], InterviewSlice> = (se
 
   // ── Resume Data ─────────────────────────────────────────────────────────────
   updateResumeData: (update) => {
+    // Use deepMergeResumeData instead of flat spread to prevent array fields
+    // (experiences, education, skills) from being wiped by partial AI updates.
     set((state) => ({
-      resumeData: { ...state.resumeData, ...update },
+      resumeData: deepMergeResumeData(state.resumeData, update),
     }));
   },
 
@@ -644,6 +716,29 @@ export const useAppStore = create<AppStore>()(
     },
   ),
 );
+
+// ── Global dev debugger ───────────────────────────────────────────────────────
+// Open any browser DevTools console and run:   atsDebug()
+// Prints a labelled snapshot of every score-related field plus the raw state.
+// Gated to DEV builds — tree-shaken out by Vite in production.
+if (import.meta.env.DEV) {
+  (window as any).atsDebug = () => {
+    const s = useAppStore.getState();
+    console.group('%c[atsDebug] JobifAI Store Snapshot', 'color: #f97316; font-weight: bold');
+    console.log('currentAtsScore :', s.currentAtsScore);
+    console.log('realAtsScore    :', s.realAtsScore);
+    console.log('analysisResult  :', s.analysisResult);
+    console.log('onboardingMode  :', s.onboardingMode);
+    console.log('isAnalyzing     :', s.isAnalyzing);
+    console.log('analysisError   :', s.analysisError);
+    console.log('resumeData      :', s.resumeData);
+    console.log('messages.length :', s.messages.length);
+    console.log('isPremium       :', s.isPremium);
+    console.groupEnd();
+    return s; // return the full state so DevTools can inspect nested objects
+  };
+  console.info('%c[JobifAI] atsDebug() available in console', 'color: #f97316');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DERIVED SELECTORS

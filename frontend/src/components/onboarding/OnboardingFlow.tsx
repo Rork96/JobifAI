@@ -323,19 +323,23 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         if (res.ok) {
           const data: unknown = await res.json();
           if (isATSAnalysisResponse(data)) {
-            // ── Step 3: update store with real score ────────────────────────
-            setAnalysisResult(data);
-            setRealAtsScore(data.score);
-            setSkillGaps(data.missingKeywords);
-            setMatchedSkills(data.foundKeywords);
+            // ── Single atomic store write (scratch path) ──────────────────
+            // All score-adjacent fields land in ONE setState so no component
+            // can render with analysisResult set but currentAtsScore still 0.
             const gap   = Math.max(0, 100 - data.score);
             const count = Math.max(data.missingKeywords.length, 1);
-            setMissingSkills(
-              data.missingKeywords.map((kw, i) => ({
+            useAppStore.setState({
+              analysisResult:  data,
+              currentAtsScore: data.score,
+              realAtsScore:    data.score,
+              skillGaps:       data.missingKeywords,
+              matchedSkills:   data.foundKeywords,
+              missingSkills:   data.missingKeywords.map((kw, i) => ({
                 skill:             kw,
                 impact_percentage: Math.max(2, Math.round(gap / count) - i),
               })),
-            );
+            });
+            console.log('[Store] ATS Score Sync (scratch submit):', data.score);
           }
         }
       } catch {
@@ -351,10 +355,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     // Called after both the JD fetch AND any evaluation have settled.
     setShowScratchSubForm(false);
     onComplete();
-  }, [
-    scratchJobInput, setJobDescription, onComplete,
-    setAnalysisResult, setRealAtsScore, setSkillGaps, setMatchedSkills, setMissingSkills,
-  ]);
+  }, [scratchJobInput, setJobDescription, onComplete]);
 
   // ── Upload resume via backend API ──────────────────────────────────────────
   /**
@@ -562,25 +563,27 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         throw new Error('Response did not match ATSAnalysisResponse contract');
       }
 
-      // ── 7. SUCCESS ─────────────────────────────────────────────────────────
-      // Atomic store write — single source of truth for the workspace
-      setAnalysisResult(data);
-      setRealAtsScore(data.score);
-      setSkillGaps(data.missingKeywords);
-      setMatchedSkills(data.foundKeywords);
-      // Derive impact_percentage from score gap spread across missing keywords
-      const gap     = Math.max(0, 100 - data.score);
-      const count   = Math.max(data.missingKeywords.length, 1);
-      setMissingSkills(
-        data.missingKeywords.map((kw, i) => ({
+      // ── 7. SUCCESS — single atomic Zustand write ─────────────────────────
+      // ALL score-adjacent fields are written in ONE useAppStore.setState()
+      // so no component ever renders with analysisResult set but
+      // currentAtsScore still at 0.  This kills the Zero Score bug.
+      const gap   = Math.max(0, 100 - data.score);
+      const count = Math.max(data.missingKeywords.length, 1);
+      useAppStore.setState({
+        analysisResult:  data,
+        currentAtsScore: data.score,   // ← THE canonical score, written here
+        realAtsScore:    data.score,
+        skillGaps:       data.missingKeywords,
+        matchedSkills:   data.foundKeywords,
+        missingSkills:   data.missingKeywords.map((kw, i) => ({
           skill:             kw,
           impact_percentage: Math.max(2, Math.round(gap / count) - i),
         })),
-      );
+      });
+      console.log('[Store] ATS Score Sync (handleAnalyze):', data.score);
 
-      // Bridge: keep legacy local state so the existing step-3 UI renders
-      // without any JSX changes in this task.  Next task replaces these
-      // bindings with analysisResult directly.
+      // Bridge: keep legacy local state for the Step-3 scan animation.
+      // These drive scoreCount / apiScore in the onboarding UI only.
       setApiScore(data.score);
       setApiGaps(data.missingKeywords);
 
@@ -593,9 +596,8 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     }
   }, [
     resumeText, jobInput, jobFetchedText, jdPasteText, showPasteFallback,
-    setUploadedResumeText, setJobDescription, setRealAtsScore,
-    setSkillGaps, setMatchedSkills, setMissingSkills,
-    setIsAnalyzing, setAnalysisError, setAnalysisResult, advanceTo,
+    setUploadedResumeText, setJobDescription,
+    setIsAnalyzing, setAnalysisError, advanceTo,
   ]);
 
   // ── Render ────────────────────────────────────────────────────────────────

@@ -138,6 +138,21 @@ class SaveProgressResponse(BaseModel):
     id:    str
 
 
+class LoadProgressResponse(BaseModel):
+    """
+    Payload returned by GET /api/user/load-progress.
+
+    found:        False when no auto-save row exists yet (new user).
+    resume_data:  The Zustand ResumeData dict (stored in content_json).
+    ats_score:    The persisted ATS score (0–100), or None if not yet scored.
+    messages:     The chat history as [{role, content}] dicts.
+    """
+    found:       bool
+    resume_data: dict                   = Field(default_factory=dict)
+    ats_score:   int | None             = None
+    messages:    list[dict[str, Any]]   = Field(default_factory=list)
+
+
 # ─── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post(
@@ -242,4 +257,75 @@ async def save_progress(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not save progress. Please try again.",
+        ) from exc
+
+
+# ─── Load Progress ──────────────────────────────────────────────────────────────
+
+@router.get(
+    "/load-progress",
+    response_model=LoadProgressResponse,
+    summary="Load the authenticated user's latest auto-saved draft on app boot",
+    description="""
+Fetches the single `__autosave__` row for the authenticated user.
+
+Called by the frontend's `useAuth` hook immediately after a session is
+confirmed (page refresh / magic-link return).  If the Zustand store is empty
+but the user has a prior session, this restores their resume data, score, and
+chat history so they can continue working without re-entering anything.
+
+Returns `found: false` (HTTP 200) when no auto-save row exists yet — this is
+the normal state for a brand-new user and should not be treated as an error.
+    """,
+)
+async def load_progress(
+    settings: Settings = Depends(get_settings),
+    user_id:  str      = Depends(get_authenticated_user_id),
+) -> LoadProgressResponse:
+    """
+    GET /api/user/load-progress — Restore the latest draft on page refresh.
+    """
+    try:
+        from supabase import create_client  # type: ignore[import-untyped]
+        client = create_client(settings.supabase_url, settings.supabase_key)
+
+        result = (
+            client.table("resumes")
+            .select("id, content_json, chat_history_json, current_ats_score")
+            .eq("user_id", user_id)
+            .eq("job_title", _AUTOSAVE_TITLE)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            logger.info("load-progress — no autosave row found for user=%s", user_id)
+            return LoadProgressResponse(found=False)
+
+        row = result.data[0]
+        logger.info(
+            "load-progress — restored user=%s  score=%s  msgs=%d",
+            user_id,
+            row.get("current_ats_score"),
+            len(row.get("chat_history_json") or []),
+        )
+
+        return LoadProgressResponse(
+            found=True,
+            resume_data=row.get("content_json")      or {},
+            ats_score=  row.get("current_ats_score"),
+            messages=   row.get("chat_history_json") or [],
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception(
+            "load-progress failed — user=%s  err=%s: %s",
+            user_id, type(exc).__name__, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not load saved progress.",
         ) from exc
