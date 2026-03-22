@@ -29,11 +29,16 @@ python-dotenv==1.0.1
 stripe==9.11.0
 
 # Google Gemini SDK — async streaming, function calling, token counting
-# We choose the official SDK over raw httpx because it handles:
-#   • gRPC ↔ REST transport negotiation
-#   • Protobuf deserialization for streamed chunks
-#   • Automatic retries and exponential backoff
-#   • Token counting and safety filter parsing
+# Minimum required: 0.7.2 (adds response_mime_type="application/json" support).
+# We pin 0.8.3 (latest stable as of 2026-03) for reproducible builds.
+#
+# IMPORTANT — model naming in v0.8.x (v1beta API endpoint):
+#   ✓  gemini-1.5-flash-latest   valid GA alias
+#   ✓  gemini-1.5-flash-001      valid pinned version
+#   ✓  gemini-2.5-flash          valid experimental alias
+#   ✗  gemini-1.5-flash          NOT a valid v1beta alias → 404
+#
+# If you upgrade this SDK, re-check _ANALYZE_MODEL_PRIORITY in evaluate.py.
 google-generativeai==0.8.3
 
 # ── Document parsing (Task 7: resume upload) ──────────────────

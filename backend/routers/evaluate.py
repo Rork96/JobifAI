@@ -750,6 +750,97 @@ def _recover_json(raw: str) -> dict:
     )
 
 
+# ─── Model priority list for /api/analyze ─────────────────────────────────────
+#
+# WHY a priority list instead of a single model string?
+#
+#   google-generativeai==0.8.x uses the v1beta API endpoint by default.
+#   In v1beta the bare alias "gemini-1.5-flash" has NO registered route → 404.
+#   The valid identifiers are the versioned / -latest aliases only:
+#
+#     ✓  gemini-1.5-flash-latest   — GA stable, always available, no thinking mode
+#     ✓  gemini-1.5-flash-001      — pinned GA version
+#     ✓  gemini-1.5-flash-002      — pinned GA version
+#     ✗  gemini-1.5-flash          — NOT a valid v1beta alias → 404
+#
+#   "gemini-2.5-flash" works in v1beta only because it's registered as an
+#   experimental name there.  But it fights its thinking budget against
+#   max_output_tokens, causing the 97-char truncation we observed.
+#
+# PRIORITY ORDER:
+#   1. gemini-1.5-flash-latest   — fast, stable, JSON-reliable, no thinking mode
+#   2. gemini-1.5-pro-latest     — slower but always available as a fallback
+#   3. gemini-2.5-flash          — last resort: works but has token-budget issues
+#
+_ANALYZE_MODEL_PRIORITY: list[str] = [
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro-latest",
+    "gemini-2.5-flash",
+]
+
+
+async def _generate_with_model_fallback(
+    model_priority: list[str],
+    system_instruction: str,
+    generation_config: "genai.types.GenerationConfig",
+    safety_settings: dict,
+    prompt: str,
+) -> tuple[str, Any]:
+    """
+    Try each model in `model_priority` until one succeeds.
+
+    Returns (model_name_used, response).
+
+    Only catches 404 / model-not-found errors and advances to the next
+    model in the list.  Any other error (auth failure, rate limit, network
+    error) is re-raised immediately so it surfaces as a real failure.
+
+    This lets us survive API surface changes (model aliases appearing /
+    disappearing in v1beta) without a code deployment.
+    """
+    last_exc: Exception | None = None
+
+    for model_name in model_priority:
+        print(f"DEBUG /api/analyze: trying model={model_name!r}")
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_instruction,
+                generation_config=generation_config,
+                safety_settings=safety_settings,
+            )
+            response = await model.generate_content_async(prompt)
+            print(f"DEBUG /api/analyze: model={model_name!r} succeeded ✓")
+            return model_name, response
+
+        except Exception as exc:  # noqa: BLE001
+            err_str = str(exc).lower()
+            # Detect 404 / model-not-found errors from the Gemini API.
+            # The SDK surfaces these as google.api_core.exceptions.NotFound
+            # whose str() contains "404" and/or "not found".
+            is_not_found = (
+                "404" in err_str
+                or "not found" in err_str
+                or "not_found" in err_str
+                or type(exc).__name__ in ("NotFound", "HttpError")
+            )
+            if is_not_found:
+                print(
+                    f"DEBUG /api/analyze: model={model_name!r} → 404/not-found, "
+                    f"trying next model in priority list"
+                )
+                last_exc = exc
+                continue
+            # Non-404 — propagate immediately (auth errors, rate limits, etc.)
+            raise
+
+    # Every model in the list returned 404
+    raise _TruncatedResponseError(
+        f"All models returned 404/not-found: {model_priority}.  "
+        f"last_error={last_exc}"
+    )
+
+
 @router.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -775,12 +866,12 @@ async def analyze(
     """
     POST /api/analyze — Atomic onboarding → workspace handoff.
 
-    Changes vs previous version:
-      • Model: gemini-1.5-flash (stable, no thinking mode, reliable JSON)
-      • max_output_tokens: 2048 (previous 1024 caused 97-char truncation)
-      • System prompt: condensed to ~300 tokens (was ~900) — more budget for output
-      • JSON parsing: _recover_json() with 4-strategy fallback before giving up
-      • Truncation failure: raises HTTP 500 "LLM Response Truncated" — visible in UI
+    Model strategy: _ANALYZE_MODEL_PRIORITY list with automatic fallback.
+      Primary:   gemini-1.5-flash-latest  (GA alias, valid in v1beta, no thinking mode)
+      Fallback1: gemini-1.5-pro-latest    (always available, slightly slower)
+      Fallback2: gemini-2.5-flash         (last resort — works but token-budget issues)
+
+    Previous bug: "gemini-1.5-flash" (bare alias) → 404 in v1beta API.
     """
     genai.configure(api_key=settings.gemini_api_key)
 
@@ -792,32 +883,20 @@ async def analyze(
     resume_snip = body.resume_text[:4_000]
     jd_snip     = body.job_description[:3_000]
 
-    model = genai.GenerativeModel(
-        # gemini-1.5-flash: stable release, no thinking mode, proven JSON reliability.
-        # gemini-2.5-flash was causing max_output_tokens fights with its internal
-        # thinking budget, truncating the JSON response at ~97 chars even when
-        # max_output_tokens was set to 1024.
-        model_name="gemini-1.5-flash",
-        system_instruction=_ANALYZE_SYSTEM,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.0,
-            top_p=1.0,
-            # 2048 tokens ≈ 6,000–8,000 chars — comfortably fits the full JSON
-            # response including macMessage (max ~300 chars), foundKeywords (up to
-            # 30 strings), missingKeywords (up to 12 strings), contextualMatches.
-            # Previous value of 1024 was the root cause of the 97-char truncation.
-            max_output_tokens=2_048,
-            response_mime_type="application/json",
-        ),
-        safety_settings={
-            HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
+    generation_config = genai.types.GenerationConfig(
+        temperature=0.0,
+        top_p=1.0,
+        max_output_tokens=2_048,          # 2048 > previous 1024 that caused 97-char cutoff
+        response_mime_type="application/json",
     )
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    }
 
-    # Concise prompt — all the semantic signal, minimum token overhead.
+    # Concise prompt — all semantic signal, minimum token overhead.
     prompt = (
         f"RESUME:\n{resume_snip}\n\n"
         f"JOB DESCRIPTION:\n{jd_snip}\n\n"
@@ -826,7 +905,13 @@ async def analyze(
     )
 
     try:
-        response = await model.generate_content_async(prompt)
+        model_used, response = await _generate_with_model_fallback(
+            model_priority=_ANALYZE_MODEL_PRIORITY,
+            system_instruction=_ANALYZE_SYSTEM,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            prompt=prompt,
+        )
         raw = _extract_response_text(response)
 
         print(f"DEBUG /api/analyze: raw LLM response ({len(raw)} chars) = {raw[:500]!r}")
@@ -892,8 +977,8 @@ async def analyze(
                 )
 
         logger.info(
-            "Analyze ✅ — score=%d  found=%d  missing=%d  ctx=%d  strategy=%s",
-            score, len(found_kw), len(missing_kw), len(ctx_matches),
+            "Analyze ✅ — model=%s  score=%d  found=%d  missing=%d  ctx=%d  strategy=%s",
+            model_used, score, len(found_kw), len(missing_kw), len(ctx_matches),
             "polishing" if (score >= 90 or len(missing_kw) == 0) else "gap-analysis",
         )
 
