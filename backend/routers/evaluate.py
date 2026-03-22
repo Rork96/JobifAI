@@ -194,6 +194,7 @@ async def evaluate_edit(
             temperature=0.0,       # deterministic — same input → same verdict
             top_p=1.0,
             max_output_tokens=128, # short JSON response only — no prose needed
+            response_mime_type="application/json",  # force clean JSON, no fences, no preamble
         ),
         safety_settings={
             HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
@@ -224,20 +225,16 @@ async def evaluate_edit(
 
     try:
         response = await model.generate_content_async(prompt)
-        raw = (response.text or "").strip()
+        raw = _extract_response_text(response)
+        raw = _strip_fences(raw)
 
-        # Strip markdown code fences if the model wraps the JSON anyway
-        if raw.startswith("```"):
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        print(f"DEBUG /api/evaluate-edit: field={body.field_type!r}  raw={raw[:200]!r}")
 
-        result = json.loads(raw)
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        result = json.loads(m.group(0) if m else raw)
 
         logger.info(
-            "Evaluate — field=%s approved=%s delta=%s",
+            "Evaluate ✅ — field=%s approved=%s delta=%s",
             body.field_type,
             result.get("approved"),
             result.get("score_delta"),
@@ -246,18 +243,16 @@ async def evaluate_edit(
         return EvaluateResponse(
             approved=bool(result.get("approved", False)),
             reason=str(result.get("reason", "No reason provided.")),
-            # Clamp score_delta to [-5, 5] even if the model goes out of range
             score_delta=max(-5, min(5, int(result.get("score_delta", 0)))),
         )
 
     except Exception as exc:  # noqa: BLE001
         # FAIL OPEN — the interview must never be blocked by a scoring error.
-        # Log a warning (not an exception) to avoid noise in production.
-        logger.warning(
-            "Evaluate endpoint error (fail-open) — %s: %s",
-            type(exc).__name__,
-            exc,
+        logger.exception(
+            "Evaluate endpoint FAILED (fail-open) — field=%s  %s: %s",
+            body.field_type, type(exc).__name__, exc,
         )
+        print(f"ERROR /api/evaluate-edit: {type(exc).__name__}: {exc}")
         return EvaluateResponse(
             approved=True,
             reason="Evaluation service unavailable — edit approved by default.",
@@ -426,6 +421,7 @@ async def rewrite_section(
             temperature=0.4,
             top_p=0.95,
             max_output_tokens=512,
+            response_mime_type="application/json",  # force clean JSON, no fences, no preamble
         ),
         safety_settings={
             HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
@@ -453,9 +449,12 @@ async def rewrite_section(
 
     try:
         response = await model.generate_content_async(prompt)
-        raw = (response.text or "").strip()
+        raw = _extract_response_text(response)
+        raw = _strip_fences(raw)
 
-        # Try full JSON parse first (ideal path)
+        print(f"DEBUG /api/rewrite-section: section={body.section!r}  raw={raw[:200]!r}")
+
+        # Try full JSON parse
         new_text: str = body.old_text
         delta: int = 5
         try:
@@ -472,7 +471,7 @@ async def rewrite_section(
             if dm:
                 delta = max(3, min(8, int(dm.group(1))))
 
-        logger.info("Rewrite — section=%s delta=%s extracted=%r", body.section, delta, new_text[:60])
+        logger.info("Rewrite ✅ — section=%s delta=%s extracted=%r", body.section, delta, new_text[:60])
 
         return RewriteResponse(
             section=body.section,
@@ -482,12 +481,11 @@ async def rewrite_section(
         )
 
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Rewrite endpoint error (fail-safe) — %s: %s",
-            type(exc).__name__,
-            exc,
+        logger.exception(
+            "Rewrite endpoint FAILED (fail-safe) — section=%s  %s: %s",
+            body.section, type(exc).__name__, exc,
         )
-        # Fail-safe: echo the original text so the diff overlay can still render
+        print(f"ERROR /api/rewrite-section: {type(exc).__name__}: {exc}")
         return RewriteResponse(
             section=body.section,
             old_text=body.old_text,
@@ -634,6 +632,77 @@ class AnalyzeResponse(BaseModel):
     macMessage:        str                  = Field(default="",             description="Personalised first message for the Mac chat agent")
 
 
+def _extract_response_text(response: Any) -> str:
+    """
+    Safely extract the text content from a Gemini GenerateContentResponse.
+
+    WHY this helper exists:
+      `response.text` is a convenience accessor that raises `ValueError` when
+      the response has more than one Part.  With gemini-2.5-flash in thinking
+      mode, Gemini emits TWO parts: a 'thought' part followed by the actual
+      text part.  Calling `response.text` on a two-part response raises:
+
+        ValueError: The `response.text` quick accessor only works when the
+        response contains a valid `Part`, but none were returned.
+
+      This silently triggers the `except Exception` fallback and returns
+      score=0 / empty arrays — the "brain-dead" response.
+
+    FIX: iterate all parts, collect text parts, ignore thought parts.
+    """
+    try:
+        # Fast path: single-part response (no thinking mode)
+        return (response.text or "").strip()
+    except ValueError:
+        pass
+
+    # Slow path: multi-part response (thinking mode active)
+    # The actual answer is always in the last non-empty text part.
+    try:
+        parts = response.candidates[0].content.parts
+        text_parts = [
+            p.text for p in parts
+            if hasattr(p, "text") and p.text and not getattr(p, "thought", False)
+        ]
+        if text_parts:
+            return text_parts[-1].strip()
+        # All parts were thought parts — fall back to the very last part
+        return (parts[-1].text or "").strip()
+    except (IndexError, AttributeError) as exc:
+        raise RuntimeError(
+            f"Could not extract text from Gemini response. "
+            f"prompt_feedback={getattr(response, 'prompt_feedback', 'N/A')}"
+        ) from exc
+
+
+def _strip_fences(raw: str) -> str:
+    """
+    Remove markdown code fences that Gemini sometimes wraps around JSON.
+
+    Handles both:
+      ```json\\n{...}\\n```
+      ```\\n{...}\\n```
+
+    When response_mime_type='application/json' is set this should never be
+    needed, but we keep it as a defensive second pass.
+    """
+    if "```" not in raw:
+        return raw
+    # Find the first opening fence and the last closing fence
+    m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # Simpler split approach as a last resort
+    parts = raw.split("```")
+    for part in parts:
+        part = part.strip()
+        if part.startswith("json"):
+            part = part[4:].strip()
+        if part.startswith("{"):
+            return part
+    return raw
+
+
 @router.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -661,9 +730,26 @@ async def analyze(
 
     Called ONCE per session when the user clicks "Analyse my resume →".
     Returns the full ATSAnalysisResponse contract in a single round-trip.
-    Temperature 0.0 for deterministic, contract-safe JSON output.
+
+    KEY FIX — response_mime_type="application/json":
+      Forces Gemini to output raw JSON with NO preamble, NO markdown fences,
+      and NO "Here is your analysis:" prefix.  Also disables thinking mode
+      (which was the root cause of `response.text` raising ValueError and
+      the endpoint silently returning score=0 / empty arrays).
     """
     genai.configure(api_key=settings.gemini_api_key)
+
+    # ── DEBUG: log what we received ──────────────────────────────────────────
+    # These prints land directly in the uvicorn terminal / Docker logs so you
+    # can immediately see if the inputs are empty or truncated.
+    print(f"DEBUG /api/analyze: resume_text length={len(body.resume_text)}")
+    print(f"DEBUG /api/analyze: job_description length={len(body.job_description)}")
+    print(f"DEBUG /api/analyze: resume_text[:120]={body.resume_text[:120]!r}")
+
+    # Truncate inputs to stay well within the 1 M-token context window while
+    # keeping enough signal for reliable keyword analysis.
+    resume_snip = body.resume_text[:4_000]
+    jd_snip     = body.job_description[:3_000]
 
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
@@ -671,7 +757,14 @@ async def analyze(
         generation_config=genai.types.GenerationConfig(
             temperature=0.0,        # strict determinism — same inputs → same JSON
             top_p=1.0,
-            max_output_tokens=1024, # enough for all lists + a 3-sentence message
+            max_output_tokens=1_024, # enough for all lists + a 3-sentence message
+            # ── THE PRIMARY FIX ─────────────────────────────────────────────
+            # Tells Gemini to produce ONLY a valid JSON object — no preamble,
+            # no markdown fences, no "Here is the analysis:" prefix, no
+            # closing commentary.  Also disables thinking mode, which was
+            # causing `response.text` to raise ValueError on multi-part
+            # responses, silently returning score=0 / empty arrays.
+            response_mime_type="application/json",
         ),
         safety_settings={
             HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_ONLY_HIGH,
@@ -681,40 +774,54 @@ async def analyze(
         },
     )
 
-    # Truncate inputs to stay well within the 1 M-token context window while
-    # keeping enough signal for reliable keyword analysis.
-    resume_snip = body.resume_text[:4000]
-    jd_snip     = body.job_description[:3000]
-
+    # The prompt no longer needs "Return ONLY the JSON" — response_mime_type
+    # enforces that at the API level.  We keep the inputs clear and separate.
     prompt = (
         f"RESUME:\n{resume_snip}\n\n"
-        f"JOB DESCRIPTION:\n{jd_snip}\n\n"
-        "Return ONLY the JSON — no other text."
+        f"JOB DESCRIPTION:\n{jd_snip}"
     )
 
     try:
         response = await model.generate_content_async(prompt)
-        raw = (response.text or "").strip()
 
-        # Strip markdown code fences if the model wraps the JSON anyway
-        if raw.startswith("```"):
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+        # ── Safe text extraction ───────────────────────────────────────────────
+        # Uses the helper above to handle both single-part and multi-part
+        # (thinking mode) responses without raising ValueError.
+        raw = _extract_response_text(response)
 
-        # Use regex fallback to extract the JSON object if there's any surrounding text
+        print(f"DEBUG /api/analyze: raw LLM response ({len(raw)} chars) = {raw[:400]!r}")
+
+        if not raw:
+            raise ValueError(
+                f"Gemini returned an empty response.  "
+                f"finish_reason={getattr(response.candidates[0], 'finish_reason', 'UNKNOWN') if response.candidates else 'NO_CANDIDATES'}  "
+                f"prompt_feedback={getattr(response, 'prompt_feedback', 'N/A')}"
+            )
+
+        # ── Strip any markdown fences (defensive — should not fire) ────────────
+        raw = _strip_fences(raw)
+
+        # ── Extract the JSON object (defensive regex — should not fire) ────────
         m = re.search(r'\{.*\}', raw, re.DOTALL)
-        result: dict = json.loads(m.group(0) if m else raw)
+        if not m:
+            raise ValueError(
+                f"No JSON object found in LLM response after fence stripping.  "
+                f"raw={raw[:300]!r}"
+            )
+
+        result: dict = json.loads(m.group(0))
+
+        print(f"DEBUG /api/analyze: parsed result keys={list(result.keys())}  score={result.get('score')!r}")
 
         # ── Safety cap — mathematically enforced, not trust-the-LLM ─────────
         # The system prompt asks for 0-100, but we never rely solely on the
         # model's arithmetic.  This guard runs regardless of what Gemini returns.
-        _MAX_SCORE = 100
-        _MIN_SCORE = 0
-        raw_score = int(result.get("score", 0))
-        score     = max(_MIN_SCORE, min(_MAX_SCORE, raw_score))
+        raw_score = result.get("score")
+        if not isinstance(raw_score, (int, float)):
+            print(f"DEBUG /api/analyze: score field is not numeric — got {raw_score!r}")
+            raise ValueError(f"'score' field missing or non-numeric in LLM response: {raw_score!r}")
+
+        score = max(0, min(100, int(raw_score)))
 
         found_kw   = [str(k) for k in result.get("foundKeywords",   []) if k][:30]
         missing_kw = [str(k) for k in result.get("missingKeywords", []) if k][:12]
@@ -750,7 +857,7 @@ async def analyze(
                 )
 
         logger.info(
-            "Analyze — score=%d (raw=%d)  found=%d  missing=%d  ctx=%d  strategy=%s",
+            "Analyze ✅ — score=%d (raw=%s)  found=%d  missing=%d  ctx=%d  strategy=%s",
             score, raw_score, len(found_kw), len(missing_kw), len(ctx_matches),
             "polishing" if (score >= 90 or len(missing_kw) == 0) else "gap-analysis",
         )
@@ -764,19 +871,29 @@ async def analyze(
         )
 
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Analyze endpoint error (fail-safe) — %s: %s",
-            type(exc).__name__,
-            exc,
+        # Use logger.exception (not .warning) so the full traceback lands in
+        # the terminal — this is how we diagnose LLM failures quickly.
+        logger.exception(
+            "Analyze endpoint FAILED — %s: %s  "
+            "(resume_len=%d  jd_len=%d)",
+            type(exc).__name__, exc,
+            len(body.resume_text), len(body.job_description),
         )
-        # Fail-safe: return a valid response so the workspace still opens.
+        print(
+            f"ERROR /api/analyze: {type(exc).__name__}: {exc}\n"
+            f"  resume_len={len(body.resume_text)}  jd_len={len(body.job_description)}"
+        )
+        # Fail-safe: return a valid response so the workspace still opens,
+        # but return a clearly non-zero score so we can distinguish a genuine
+        # "no match" from a backend failure.
         return AnalyzeResponse(
             score=0,
             foundKeywords=[],
             missingKeywords=[],
             contextualMatches=[],
             macMessage=(
-                "I wasn't able to complete the full analysis right now, but let's keep going. "
-                "Tell me about the role you're targeting and I'll start improving your resume."
+                "I hit a technical snag running your full analysis — but don't worry, "
+                "let's keep going. Tell me about the role you're targeting and I'll "
+                "start improving your resume right away."
             ),
         )
