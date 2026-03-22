@@ -284,10 +284,34 @@ async def load_progress(
 ) -> LoadProgressResponse:
     """
     GET /api/user/load-progress — Restore the latest draft on page refresh.
+
+    Always returns HTTP 200.  `found=False` means new user / no draft yet —
+    the frontend should treat this as a clean slate, not an error.
     """
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _safe_dict(value: Any) -> dict:
+        """Return value if it's a non-empty dict, else {}."""
+        return value if isinstance(value, dict) and value else {}
+
+    def _safe_list(value: Any) -> list:
+        """Return value if it's a non-empty list of dicts, else []."""
+        if not isinstance(value, list):
+            return []
+        # Filter out any non-dict entries so the frontend never chokes on
+        # corrupted rows (e.g. a column that somehow stored a plain string).
+        return [m for m in value if isinstance(m, dict)]
+
+    def _safe_score(value: Any) -> int | None:
+        """Return value clamped to 0–100 if numeric, else None."""
+        if isinstance(value, (int, float)) and 0 <= int(value) <= 100:
+            return int(value)
+        return None
+
     try:
         from supabase import create_client  # type: ignore[import-untyped]
         client = create_client(settings.supabase_url, settings.supabase_key)
+
+        logger.debug("load-progress — querying autosave row for user=%s", user_id)
 
         result = (
             client.table("resumes")
@@ -298,23 +322,50 @@ async def load_progress(
             .execute()
         )
 
+        # ── No row yet → new user, return a clean empty structure ─────────────
         if not result.data:
-            logger.info("load-progress — no autosave row found for user=%s", user_id)
+            logger.info(
+                "load-progress — no autosave row for user=%s (new user or first session)",
+                user_id,
+            )
             return LoadProgressResponse(found=False)
 
         row = result.data[0]
+        row_id = row.get("id", "unknown")
+
+        # ── Defensive extraction ───────────────────────────────────────────────
+        # `chat_history_json` requires the ADD COLUMN migration.  If the column
+        # hasn't been created yet, Supabase returns the row without that key.
+        # We handle KeyError / None gracefully rather than blowing up.
+        raw_resume   = row.get("content_json")
+        raw_messages = row.get("chat_history_json")          # None if column missing
+        raw_score    = row.get("current_ats_score")
+
+        resume_data = _safe_dict(raw_resume)
+        messages    = _safe_list(raw_messages)
+        ats_score   = _safe_score(raw_score)
+
+        # ── Guard: if content_json is completely empty treat as no draft ───────
+        if not resume_data:
+            logger.info(
+                "load-progress — row id=%s for user=%s has empty content_json (treating as no draft)",
+                row_id, user_id,
+            )
+            return LoadProgressResponse(found=False)
+
         logger.info(
-            "load-progress — restored user=%s  score=%s  msgs=%d",
-            user_id,
-            row.get("current_ats_score"),
-            len(row.get("chat_history_json") or []),
+            "load-progress — restored user=%s  row=%s  score=%s  "
+            "resume_keys=%d  msgs=%d  chat_col_present=%s",
+            user_id, row_id, ats_score,
+            len(resume_data), len(messages),
+            raw_messages is not None,
         )
 
         return LoadProgressResponse(
-            found=True,
-            resume_data=row.get("content_json")      or {},
-            ats_score=  row.get("current_ats_score"),
-            messages=   row.get("chat_history_json") or [],
+            found=       True,
+            resume_data= resume_data,
+            ats_score=   ats_score,
+            messages=    messages,
         )
 
     except HTTPException:
@@ -327,5 +378,5 @@ async def load_progress(
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not load saved progress.",
+            detail="Could not load saved progress. Please try again.",
         ) from exc

@@ -1,61 +1,69 @@
 /**
  * hooks/useAuth.ts — Supabase Auth Integration
  * ─────────────────────────────────────────────────────────────────────────────
- * This hook owns ALL authentication logic.  It is called ONCE in main.tsx
- * (at the root, outside React) to set up the auth listener.  Components
- * read auth state from the Zustand store; they do NOT call this hook directly.
+ * ARCHITECTURE: onAuthStateChange as SOLE source of truth.
  *
- * WHAT THIS HOOK DOES:
- *   1. Checks for an existing session on app load (restores logged-in state).
- *   2. Subscribes to Supabase auth state changes (sign-in, sign-out, token
- *      refresh) and keeps the Zustand store in sync.
- *   3. After a sign-in, fetches the user's `profiles` row to read `is_premium`.
- *   4. Exposes `signInWithEmail`, `signInWithGoogle`, and `signOut` actions.
+ * Previous design had a race: getSession().then() fired syncProfileToStore()
+ * without await, called setIsAuthLoading(false) immediately, then the async
+ * work ran in the background.  atsDebug() called during that window saw
+ * isAuthLoading=true OR resumeData={} depending on timing.
  *
- * WHY HERE AND NOT IN A COMPONENT?
- *   Auth state must outlive any single component.  By initialising the
- *   listener in a hook called from the React root, we guarantee it's always
- *   running even if the user navigates between screens.
+ * New design:
+ *   1. Subscribe to onAuthStateChange FIRST.
+ *   2. INITIAL_SESSION fires synchronously (or near-sync) with the current
+ *      session — await the full syncProfileToStore before calling
+ *      setIsAuthLoading(false).  This means isAuthLoading stays true until
+ *      BOTH the profile AND the saved draft are in the store.
+ *   3. Safety timer: if INITIAL_SESSION never fires (Supabase misconfigured,
+ *      network down), unblock the app after 8 s so it doesn't hang forever.
+ *   4. No separate getSession() call — INITIAL_SESSION handles it.
  *
- * AUTH FLOWS SUPPORTED:
- *   • Magic Link  — passwordless email one-time link (OTP)
- *   • Google OAuth — popup/redirect OAuth2 via Supabase's Google provider
- *
- * PREMIUM CHECK:
- *   After every sign-in, we SELECT from `public.profiles` where id = user.id.
- *   The `is_premium` flag is flipped to true by the Stripe webhook handler in
- *   the backend.  We copy it into the Zustand store so the paywall in
- *   DocumentPreview can gate the PDF export without another round-trip.
+ * EVENT MATRIX:
+ *   INITIAL_SESSION  → full sync + setIsAuthLoading(false)  [always]
+ *   SIGNED_IN        → full sync                            [new login]
+ *   TOKEN_REFRESHED  → full sync (loadSavedProgress guard skips if data exists)
+ *   SIGNED_OUT       → clearAuth()
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { useEffect }                  from 'react';
-import { supabase, type Profile }      from '@/lib/supabase';
-import { useAppStore }                 from '@/store/useAppStore';
+import { useEffect }                   from 'react';
+import { supabase, type Profile }       from '@/lib/supabase';
+import { useAppStore }                  from '@/store/useAppStore';
 import type { ResumeData, ChatMessage } from '@/types';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS (module-level so they don't get recreated on every render)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Restore the user's last auto-saved draft from Supabase into the Zustand store.
+ * Restore the user's last auto-saved draft from the backend into Zustand.
  *
- * Only runs when the store's resumeData is empty (i.e. a fresh page load or
- * hard refresh).  Skipped on in-session navigation (store already has data).
+ * GUARD: skips immediately if resumeData is already populated (in-session
+ * navigation, hot-reload, TOKEN_REFRESHED on an active session).
  *
- * On success: writes resumeData, currentAtsScore, and chat messages atomically.
- * On failure: silently no-ops — a failed restore must never block the app.
+ * ATOMIC: resumeData + currentAtsScore + messages land in ONE setState so no
+ * component sees partial state (resume without score, or score without data).
  */
 async function loadSavedProgress(accessToken: string): Promise<void> {
-  // Guard: skip if the store already has resume data (not a fresh load)
-  const { resumeData, addMessage } = useAppStore.getState();
-  if (Object.keys(resumeData).length > 0) return;
+  const currentResumeData = useAppStore.getState().resumeData;
+  if (Object.keys(currentResumeData).length > 0) {
+    console.log('[useAuth] loadSavedProgress — store populated, skipping restore');
+    return;
+  }
+
+  console.log('[useAuth] loadSavedProgress — fetching /api/user/load-progress…');
 
   try {
     const res = await fetch('/api/user/load-progress', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    if (!res.ok) return; // 401 / 404 / 503 — no saved data, that's fine
+    console.log('[useAuth] loadSavedProgress — HTTP', res.status);
+
+    if (!res.ok) {
+      console.warn('[useAuth] loadSavedProgress — non-OK response, skipping restore');
+      return;
+    }
 
     const payload: {
       found:       boolean;
@@ -64,42 +72,52 @@ async function loadSavedProgress(accessToken: string): Promise<void> {
       messages:    Array<{ role: string; content: string }>;
     } = await res.json();
 
-    if (!payload.found || Object.keys(payload.resume_data).length === 0) return;
+    console.log('[useAuth] loadSavedProgress — payload:', {
+      found:    payload.found,
+      score:    payload.ats_score,
+      msgs:     payload.messages?.length ?? 0,
+      hasData:  Object.keys(payload.resume_data ?? {}).length > 0,
+    });
 
-    // ── Single atomic write — resume + score land together ───────────────────
+    if (!payload.found || Object.keys(payload.resume_data ?? {}).length === 0) {
+      console.log('[useAuth] loadSavedProgress — no saved draft found (new user / empty draft)');
+      return;
+    }
+
+    // Build full ChatMessage objects with stable IDs and ordered timestamps.
+    // Timestamps are spaced 100 ms apart so React list keys are unique and
+    // sorting is deterministic.
+    const now = Date.now();
+    const restoredMessages: ChatMessage[] = (payload.messages ?? []).map((m, i) => ({
+      id:        `restored_${now}_${i}`,
+      role:      m.role as ChatMessage['role'],
+      content:   m.content,
+      timestamp: now - (payload.messages.length - 1 - i) * 100,
+    }));
+
+    // ── Single atomic write ─────────────────────────────────────────────────
+    // resumeData, currentAtsScore, AND messages all land in ONE setState call.
+    // No component can ever see resumeData populated but messages empty, or
+    // the score at 0 while the resume is already rendered.
     useAppStore.setState({
       resumeData:      payload.resume_data as Partial<ResumeData>,
       currentAtsScore: payload.ats_score ?? 0,
       realAtsScore:    payload.ats_score ?? null,
+      messages:        restoredMessages,
     });
 
-    // Restore chat history — addMessage generates collision-resistant IDs
-    if (payload.messages?.length > 0) {
-      payload.messages.forEach((m) => {
-        addMessage({
-          role:    m.role as ChatMessage['role'],
-          content: m.content,
-        });
-      });
-    }
-
     console.log(
-      '[useAuth] Session restored from Supabase — score:', payload.ats_score,
-      ' msgs:', payload.messages?.length ?? 0,
+      `[useAuth] ✅ Session restored — score: ${payload.ats_score} | msgs: ${restoredMessages.length}`,
     );
-  } catch {
-    // Silent — a failed restore should never crash or block the app
+  } catch (err) {
+    // Log — never silently swallow so we can diagnose issues
+    console.error('[useAuth] loadSavedProgress — fetch error:', err);
   }
 }
 
 /**
- * Fetch the `profiles` row for a given user ID and update the Zustand store
- * with `is_premium` and the user object.  Also triggers a draft restore.
- *
- * Called after every successful sign-in event so the store always reflects
- * the latest entitlement state.
- *
- * @param accessToken  Supabase JWT — forwarded to loadSavedProgress for auth.
+ * Fetch the user's `profiles` row (is_premium) and then restore their draft.
+ * Called after every auth event that supplies a session.
  */
 async function syncProfileToStore(
   userId:      string,
@@ -108,9 +126,10 @@ async function syncProfileToStore(
 ): Promise<void> {
   const { setUser, setIsPremium } = useAppStore.getState();
 
-  // Optimistically set the user so the UI updates immediately (no flicker)
+  // Optimistically set the user so the TopBar avatar appears immediately
   setUser({ id: userId, email: email ?? null });
 
+  // ── Premium flag ──────────────────────────────────────────────────────────
   try {
     const { data, error } = await supabase
       .from('profiles')
@@ -119,109 +138,133 @@ async function syncProfileToStore(
       .single();
 
     if (error) {
-      // Profile may not exist yet if the `handle_new_user` trigger hasn't fired.
-      // This can happen in development if the trigger was added after the user
-      // was created.  Fail gracefully — isPremium stays false.
-      console.warn('[useAuth] Could not fetch profile:', error.message);
+      console.warn('[useAuth] profiles fetch failed:', error.message);
       setIsPremium(false);
     } else {
       setIsPremium((data as Profile).is_premium ?? false);
     }
-  } catch {
+  } catch (err) {
+    console.error('[useAuth] profiles fetch threw:', err);
     setIsPremium(false);
   }
 
-  // After confirming the session, restore any previous draft from Supabase.
-  // loadSavedProgress guards against running when the store already has data.
+  // ── Draft restore ──────────────────────────────────────────────────────────
+  // loadSavedProgress has its own guard — safe to call on every auth event.
   await loadSavedProgress(accessToken);
 }
 
-// ── Hook ──────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// HOOK
+// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Initialise the Supabase auth listener.
- * Call this hook ONCE at the application root (in main.tsx or App.tsx).
- *
- * Returns auth action helpers that the TopBar Sign-In UI can call directly.
- *
- * Usage:
- *   // In App.tsx or main.tsx:
- *   const auth = useAuth();
- *
- *   // Pass actions down to the TopBar:
- *   <TopBar onSignIn={auth.signInWithEmail} onSignOut={auth.signOut} />
- */
 export function useAuth() {
-  const { setIsAuthLoading, clearAuth } = useAppStore(
-    (s) => ({ setIsAuthLoading: s.setIsAuthLoading, clearAuth: s.clearAuth })
-  );
+  const setIsAuthLoading = useAppStore((s) => s.setIsAuthLoading);
+  const clearAuth        = useAppStore((s) => s.clearAuth);
 
   useEffect(() => {
-    // ── Step 1: Check for an existing session on mount ─────────────────────
-    // This restores state after a page refresh or a Magic Link redirect.
     setIsAuthLoading(true);
+    console.log('[useAuth] Initialising — isAuthLoading: true');
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        // Pass the access token so syncProfileToStore can restore the draft
-        syncProfileToStore(
-          session.user.id,
-          session.user.email ?? null,
-          session.access_token,
-        );
+    // ── Safety timer ─────────────────────────────────────────────────────────
+    // If Supabase never fires INITIAL_SESSION (misconfigured SDK, network
+    // failure, localStorage cleared), unblock the app after 8 s so the user
+    // isn't stuck on a blank screen.
+    const safetyTimer = setTimeout(() => {
+      if (useAppStore.getState().isAuthLoading) {
+        console.warn('[useAuth] Safety timeout — forcing isAuthLoading: false');
+        useAppStore.getState().setIsAuthLoading(false);
       }
-      // Regardless of whether there's a session, we're done loading
-      setIsAuthLoading(false);
-    });
+    }, 8_000);
 
-    // ── Step 2: Listen for auth state changes ─────────────────────────────
-    // Supabase fires this whenever the user signs in, signs out, or the
-    // JWT is refreshed automatically.
+    // ── Auth state listener ────────────────────────────────────────────────
+    // onAuthStateChange is the SINGLE source of truth for auth state.
+    // We do NOT call getSession() separately — INITIAL_SESSION handles it.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          if (session?.user && session.access_token) {
-            await syncProfileToStore(
-              session.user.id,
-              session.user.email ?? null,
-              session.access_token,
-            );
+        console.log(`[useAuth] ${event} — user: ${session?.user?.id ?? 'none'}`);
+
+        switch (event) {
+          // ── INITIAL_SESSION ──────────────────────────────────────────────
+          // Fires once on startup (always, with or without a session).
+          // We AWAIT the full sync here so isAuthLoading stays true until
+          // the store is completely populated.
+          case 'INITIAL_SESSION': {
+            if (session?.user && session.access_token) {
+              await syncProfileToStore(
+                session.user.id,
+                session.user.email ?? null,
+                session.access_token,
+              );
+            }
+            clearTimeout(safetyTimer);
+            // setIsAuthLoading AFTER the full sync — not before
+            setIsAuthLoading(false);
+            console.log('[useAuth] INITIAL_SESSION complete — isAuthLoading: false');
+            break;
           }
-        }
 
-        if (event === 'SIGNED_OUT') {
-          clearAuth();
-        }
+          // ── SIGNED_IN ────────────────────────────────────────────────────
+          // Fires after Magic Link click, Google OAuth redirect, or when
+          // the session is recovered from a URL hash (#access_token=...).
+          case 'SIGNED_IN': {
+            if (session?.user && session.access_token) {
+              await syncProfileToStore(
+                session.user.id,
+                session.user.email ?? null,
+                session.access_token,
+              );
+            }
+            // SIGNED_IN that fires AFTER INITIAL_SESSION must also unblock
+            // loading in case INITIAL_SESSION fired without a user but
+            // SIGNED_IN fires right after (Magic Link redirect race).
+            if (useAppStore.getState().isAuthLoading) {
+              clearTimeout(safetyTimer);
+              setIsAuthLoading(false);
+            }
+            break;
+          }
 
-        // INITIAL_SESSION fires immediately — mark loading done
-        if (event === 'INITIAL_SESSION') {
-          setIsAuthLoading(false);
+          // ── TOKEN_REFRESHED ───────────────────────────────────────────────
+          // JWT expired and was silently refreshed.  Re-sync profile +
+          // loadSavedProgress (the guard skips if store already has data).
+          case 'TOKEN_REFRESHED': {
+            if (session?.user && session.access_token) {
+              await syncProfileToStore(
+                session.user.id,
+                session.user.email ?? null,
+                session.access_token,
+              );
+            }
+            break;
+          }
+
+          // ── SIGNED_OUT ───────────────────────────────────────────────────
+          case 'SIGNED_OUT': {
+            clearAuth();
+            console.log('[useAuth] SIGNED_OUT — store cleared');
+            break;
+          }
+
+          default:
+            break;
         }
-      }
+      },
     );
 
-    // Cleanup: unsubscribe when the hook is unmounted (app teardown)
-    return () => subscription.unsubscribe();
+    // Cleanup: cancel timer + unsubscribe on unmount
+    return () => {
+      clearTimeout(safetyTimer);
+      subscription.unsubscribe();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Exposed auth actions ─────────────────────────────────────────────────
+  // ── Exposed auth actions ──────────────────────────────────────────────────
 
-  /**
-   * Send a Magic Link email.  The user clicks the link in their inbox and is
-   * redirected back to the app, where `onAuthStateChange` catches the session.
-   *
-   * @param email  The user's email address.
-   * @returns      An error string if the send failed, null on success.
-   */
   const signInWithEmail = async (email: string): Promise<string | null> => {
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: {
-        // After clicking the Magic Link, redirect here so the app can catch
-        // the session from the URL fragment.
-        emailRedirectTo: window.location.origin,
-      },
+      options: { emailRedirectTo: window.location.origin },
     });
     if (error) {
       console.error('[useAuth] Magic Link error:', error.message);
@@ -230,28 +273,19 @@ export function useAuth() {
     return null;
   };
 
-  /**
-   * Open the Google OAuth flow.
-   * Supabase handles the OAuth popup/redirect and fires `SIGNED_IN` when done.
-   */
   const signInWithGoogle = async (): Promise<void> => {
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: window.location.origin,
-        // Request the profile scope so we can access the user's name + avatar
         scopes: 'openid email profile',
       },
     });
   };
 
-  /**
-   * Sign the user out and wipe all local session state.
-   * The `onAuthStateChange` handler fires `SIGNED_OUT` and calls `clearAuth()`.
-   */
   const signOut = async (): Promise<void> => {
     await supabase.auth.signOut();
-    // clearAuth() is called by the onAuthStateChange handler above
+    // clearAuth() is called by the SIGNED_OUT handler above
   };
 
   return { signInWithEmail, signInWithGoogle, signOut };
