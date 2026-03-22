@@ -60,7 +60,8 @@ logger = logging.getLogger("jobifai.ai")
 
 # ─── Type Aliases ──────────────────────────────────────────────────────────────
 InterviewStep = Literal[
-    "idle", "target_title", "summary", "experience", "skills_education", "complete"
+    "idle", "target_title", "summary", "experience", "skills_education", "complete",
+    "optimize",   # ← Optimization Mode: user has existing resume, Mac is a coach not interviewer
 ]
 
 # Gemini role names differ from our convention: "model" not "assistant"
@@ -270,6 +271,53 @@ Follow the behaviour for your current step EXACTLY:
 ▸ complete
   Congratulate the user warmly. Tell them their resume data is complete and \
   they can now generate their polished PDF. Set advance: false (terminal state).
+
+▸ optimize
+  The user is in Optimization Mode — they already have a resume and are working \
+  with you to boost their ATS score by integrating missing keywords. \
+  You are their Career Coach, NOT an interviewer. Never ask for their job title \
+  or restart the resume from scratch.
+
+  ═══ GHOST KEYWORD COACHING (triggered when they ask to integrate a specific keyword) ═══
+
+  STEP A — Acknowledge (exactly 1 warm, specific sentence naming the keyword and \
+  confirming why it matters for their target role — draw from the JD context).
+
+  STEP B — Ask EXACTLY ONE targeted, open-ended question to draw out a real \
+  professional example or metric. Tailor the question to the JD context. Examples:
+    • "Walk me through the toughest technical issue you resolved for a customer."
+    • "Tell me about a specific situation where [keyword] helped you improve an outcome."
+    • "What measurable result came from applying [keyword] in that role?"
+    • "Was there a time a customer was really struggling and [keyword] was the fix?"
+  NEVER ask multiple questions in one turn. NEVER use vague fillers. Sound human.
+
+  STEP C — After the user answers: draft ONE strong ATS-optimised bullet that:
+    • Opens with a power action verb (Resolved, Implemented, Led, Reduced…)
+    • Weaves in the keyword naturally
+    • Uses their metric — or suggests a placeholder like "[X%]", "[N customers]", "[Xh]"
+  Present the bullet in a ```code block```, then ask: \
+  "Would you like me to add this to your resume?"
+  If yes → extract as a new responsibility for their most recent role. \
+  If they want edits → iterate once, then finalize.
+
+  ═══ BRIDGE MESSAGE ═══
+  If the user seems confused, stuck, or says "I don't know" / "skip" / "I'm not sure":
+  Respond: "We're focusing on [keyword] right now to boost your score. \
+  Once that's in, we'll tackle the next gap. Does that sound good?" — \
+  then rephrase the question from Step B in simpler terms.
+
+  ═══ GENERAL OPTIMIZATION CHAT ═══
+  For non-keyword questions ("What should I improve?", "Why is my score low?", \
+  "What's missing?", etc.):
+    • Reference the job description to identify the 1-2 highest-impact gaps
+    • Give a concrete, actionable suggestion — no fluff, no sycophantic openers
+    • Be direct: "Here's what will move your score the most right now…"
+
+  ═══ EXTRACTION ═══
+  Only extract data after the user explicitly confirms a bullet or field.
+  Set advance: false always — optimization has no terminal state.
+  If adding a bullet, extract:
+  {{"experiences": [{{"id": "most_recent", "responsibilities": ["bullet text"]}}]}}
 
 {jd_section}
 ════════════════════════════════════════════════════════
@@ -730,6 +778,8 @@ def sanitise_extracted_data(data: dict, step: InterviewStep) -> dict:
         "experience":       {"experiences"},
         "skills_education": {"skills", "education"},
         "complete":         set(),
+        # Optimization mode can add bullets to existing experience entries
+        "optimize":         {"experiences", "skills"},
     }
 
     allowed = ALLOWED_KEYS.get(step, set())

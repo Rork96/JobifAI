@@ -184,15 +184,20 @@ function dispatchInsertSkill(gap: string) {
 /**
  * Auto-sends a tailored coaching request when a ghost keyword is clicked.
  *
- * Uses the `jobifai:ghostKeyword` event channel (separate from the checklist
- * chip channel) so ChatPanel can auto-submit rather than just populate the
- * input.  Mac receives a targeted prompt and responds with a bullet suggestion.
+ * Dispatches `jobifai:ghostKeyword` with TWO fields:
+ *   • `message`  — the clean, human-readable text shown in the chat bubble
+ *   • `keyword`  — the raw keyword sent to the backend as `ghost_keyword` so
+ *                  Mac can inject targeted coaching context for this turn
+ *
+ * ChatPanel sets both `inputValue` (→ display) and `pendingGhostKeyword`
+ * (→ API field) from these values in a single React render batch.
  */
 function dispatchGhostKeywordPrompt(keyword: string): void {
   window.dispatchEvent(
     new CustomEvent('jobifai:ghostKeyword', {
       detail: {
-        message: `Help me integrate the missing keyword "${keyword}" into my professional experience.`,
+        keyword,
+        message: `Can you help me add "${keyword}" to my resume?`,
       },
     }),
   );

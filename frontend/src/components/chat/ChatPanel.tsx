@@ -74,6 +74,12 @@ interface InterviewRequestBody {
   byok_api_key?:        string;
   /** Optional: when set, Mac tailors questions to the JD's skills and keywords. */
   job_description?:     string;
+  /**
+   * Optional: the ghost keyword the user clicked in the resume preview.
+   * When set, the backend injects a coaching-mode context so Mac asks ONE
+   * targeted follow-up question (tailored to the JD) before drafting a bullet.
+   */
+  ghost_keyword?:       string;
 }
 
 /** Parsed payload of a `data_extract` SSE event (mirrors ai_service.py output). */
@@ -217,7 +223,13 @@ export const ChatPanel: React.FC = () => {
   // Set to true when a ghost word is clicked in the resume preview.  A separate
   // useEffect (declared AFTER handleSend) watches this flag and fires handleSend
   // once React has flushed the inputValue state update.
-  const [ghostAutoSend, setGhostAutoSend] = useState(false);
+  const [ghostAutoSend,      setGhostAutoSend]      = useState(false);
+  // The raw keyword string from the ghost click (e.g. "Terraform") — passed to
+  // the backend as `ghost_keyword` so Mac can ask a targeted coaching question.
+  const [pendingGhostKeyword, setPendingGhostKeyword] = useState<string | null>(null);
+  // Status label shown in the thinking bubble instead of generic dots.
+  // Set to "Drafting your achievement…" during ghost keyword turns.
+  const [thinkingLabel,       setThinkingLabel]       = useState<string | null>(null);
 
   // ── Refs ────────────────────────────────────────────────────────────────────
   // AbortController cancels the in-flight fetch on unmount or new request.
@@ -365,14 +377,15 @@ export const ChatPanel: React.FC = () => {
 
   // ── Ghost keyword click → auto-submit ─────────────────────────────────────
   // When a dashed ghost word is clicked in StandardA4Layout, DocumentPreview
-  // dispatches 'jobifai:ghostKeyword' with a pre-formed coaching message.
-  // Here we set inputValue to that message and raise the ghostAutoSend flag.
-  // The actual handleSend() call lives in a separate useEffect declared after
-  // handleSend is defined — preventing a forward-reference ReferenceError.
+  // dispatches 'jobifai:ghostKeyword' with a pre-formed coaching message AND
+  // the raw keyword string.  We batch all three state updates so React commits
+  // them in a single render — by the time the auto-submit effect fires,
+  // inputValue, pendingGhostKeyword, and ghostAutoSend are all consistent.
   useEffect(() => {
     const handler = (e: Event) => {
-      const { message } = (e as CustomEvent<{ message: string }>).detail;
+      const { message, keyword } = (e as CustomEvent<{ message: string; keyword?: string }>).detail;
       setInputValue(message);
+      if (keyword) setPendingGhostKeyword(keyword);
       setGhostAutoSend(true);
     };
     window.addEventListener('jobifai:ghostKeyword', handler);
@@ -642,7 +655,6 @@ export const ChatPanel: React.FC = () => {
     // The backend wants history EXCLUDING the current user turn —
     // `prevMessages` is the conversation so far, not including `trimmed`.
     const prevMessages = useAppStore.getState().messages;
-    const step         = currentStep;
     const langUser     = userLang;
     const langResume   = resumeLang;
     // Always read resumeData directly from the store (not from the React
@@ -650,6 +662,26 @@ export const ChatPanel: React.FC = () => {
     // This matters after a data_extract update in the same event-loop tick
     // where the React subscription may not have re-rendered yet.
     const ctxData = useAppStore.getState().resumeData;
+
+    // ── Effective step: use 'optimize' in upload/optimization mode ─────────────
+    // In 'upload' mode the currentStep stays at 'idle' because no interview is
+    // running.  Sending 'idle' makes Mac follow the "greet and ask for title"
+    // instruction — completely wrong for keyword coaching.  We override to
+    // 'optimize' so Mac follows the Career Coach rules instead.
+    const st = useAppStore.getState();
+    const isOptimizeMode =
+      st.onboardingMode === 'upload' ||
+      (st.analysisResult !== null && st.onboardingMode !== 'scratch');
+    const effectiveStep = isOptimizeMode ? 'optimize' : currentStep;
+
+    // ── Ghost keyword context ──────────────────────────────────────────────────
+    // Capture and clear pendingGhostKeyword in the same render-tick so the next
+    // send (non-ghost) doesn't accidentally carry a stale keyword.
+    const ghostKeyword = pendingGhostKeyword;
+    if (ghostKeyword) {
+      setPendingGhostKeyword(null);
+      setThinkingLabel('Drafting your achievement…');
+    }
 
     // 1. Haptic feedback on send — single 50 ms pulse signals "message sent"
     hapticFeedback([50]);
@@ -674,6 +706,7 @@ export const ChatPanel: React.FC = () => {
     const cleanup = () => {
       setStreamingContent(null);
       setIsGenerating(false);
+      setThinkingLabel(null);  // Clear "Drafting your achievement…" status
       finished = true;
     };
 
@@ -683,7 +716,7 @@ export const ChatPanel: React.FC = () => {
 
     const body: InterviewRequestBody = {
       user_message:         trimmed,
-      current_step:         step,
+      current_step:         effectiveStep,
       user_lang:            langUser,
       resume_lang:          langResume,
       conversation_history: prevMessages.map((m) => ({
@@ -694,9 +727,13 @@ export const ChatPanel: React.FC = () => {
       // BYOK: if user supplied their own Gemini key, pass it to the backend.
       // The backend uses it instead of the server-side GEMINI_API_KEY env var.
       ...(byokKey ? { byok_api_key: byokKey } : {}),
-      // Pass the JD from onboarding so Mac's system prompt includes the job context.
-      // undefined → omitted from JSON (backend treats null/missing as "no JD").
+      // Pass the JD so Mac's system prompt always includes RULE 4b job context.
+      // Sent on EVERY turn — not only greetings — so ghost-keyword coaching turns
+      // also have the full JD and can tailor questions to the specific role.
       ...(jobDescription ? { job_description: jobDescription } : {}),
+      // Pass the ghost keyword when it was triggered by a ghost-gap click.
+      // The backend injects a targeted coaching context for this turn only.
+      ...(ghostKeyword ? { ghost_keyword: ghostKeyword } : {}),
     };
 
     try {
@@ -1084,15 +1121,27 @@ export const ChatPanel: React.FC = () => {
               <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center">
                 <span className="text-xs">🐾</span>
               </div>
-              <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1 items-center">
-                {[0, 1, 2].map((i) => (
+              <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1.5 items-center min-w-[80px]">
+                {thinkingLabel ? (
+                  /* Ghost keyword coaching — show contextual status text */
                   <motion.span
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block"
-                    animate={{ y: [0, -4, 0] }}
-                    transition={{ repeat: Infinity, duration: 0.7, delay: i * 0.15 }}
-                  />
-                ))}
+                    className="text-[11px] font-medium text-brand-500 leading-none"
+                    animate={{ opacity: [0.6, 1, 0.6] }}
+                    transition={{ repeat: Infinity, duration: 1.4 }}
+                  >
+                    {thinkingLabel}
+                  </motion.span>
+                ) : (
+                  /* Default — bouncing dots */
+                  [0, 1, 2].map((i) => (
+                    <motion.span
+                      key={i}
+                      className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block"
+                      animate={{ y: [0, -4, 0] }}
+                      transition={{ repeat: Infinity, duration: 0.7, delay: i * 0.15 }}
+                    />
+                  ))
+                )}
               </div>
             </motion.div>
           )}

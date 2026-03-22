@@ -117,7 +117,8 @@ export type InterviewStep =
   | 'summary'           // Step 2: Professional summary
   | 'experience'        // Step 3: Work history (AI probes for metrics + action verbs)
   | 'skills_education'  // Step 4: Skills + education
-  | 'complete';         // All data collected → show Paywall CTA
+  | 'complete'          // All data collected → show Paywall CTA
+  | 'optimize';         // Optimization Mode — user has existing resume, Mac is a coach
 
 /**
  * The authoritative step order used by `advanceStep()`.
@@ -140,6 +141,7 @@ export const INTERVIEW_STEP_LABELS: Record<InterviewStep, string> = {
   experience:       'Experience',
   skills_education: 'Skills & Education',
   complete:         'Ready to Generate',
+  optimize:         'Optimizing',
 };
 
 /** Mac's opening prompt for each step — shown above the chat input. */
@@ -150,6 +152,7 @@ export const INTERVIEW_STEP_PROMPTS: Record<InterviewStep, string> = {
   experience:       'Tell me about your most recent role. Company, title, and what you accomplished?',
   skills_education: "Awesome! What are your top technical and soft skills? And where did you study?",
   complete:         "Your resume is ready! 🎉 Unlock PDF export to download it.",
+  optimize:         'Click a ghost keyword in your resume or ask Mac to improve any section.',
 };
 
 // ── Resume Data (structured output collected during interview) ────────────────

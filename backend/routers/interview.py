@@ -191,6 +191,16 @@ class InterviewRequest(BaseModel):
                     "the initial analysis turn.",
     )
 
+    # ── Optimization Mode ────────────────────────────────────────────────────────
+    ghost_keyword: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Optional: the specific keyword the user clicked in the ghost-gap "
+                    "preview.  When set, the backend injects a coaching-mode system "
+                    "context that instructs Mac to ask ONE targeted follow-up question "
+                    "tailored to the job description before drafting a bullet.",
+    )
+
     model_config = {"json_schema_extra": {
         "example": {
             "user_message": "I was a Senior Developer at Shopify from 2021 to 2023.",
@@ -311,6 +321,24 @@ async def interview_turn(
     if body.job_context:
         context_parts.append(
             f"Target job description:\n{body.job_context}"
+        )
+
+    if body.ghost_keyword:
+        # Extract a short role hint from whichever JD field is available
+        jd_preview = (body.job_description or body.job_context or "").strip()[:400]
+        role_hint = f"\nRole context from JD: {jd_preview}" if jd_preview else ""
+        context_parts.append(
+            f"[Ghost Keyword Coaching — FOLLOW THE ▸ optimize STEP RULES]\n"
+            f"Keyword to integrate: '{body.ghost_keyword}'\n"
+            f"This keyword was flagged as MISSING from the user's resume "
+            f"but IS required by the target job description.{role_hint}\n\n"
+            f"Your task this turn (Steps A→B of the coaching flow):\n"
+            f"  A. Acknowledge '{body.ghost_keyword}' warmly — 1 sentence, reference the role.\n"
+            f"  B. Ask EXACTLY ONE specific, open-ended question to extract a real example.\n"
+            f"     Make it role-specific (e.g. for customer support: "
+            f"'Walk me through the toughest tech issue you resolved for a customer.').\n"
+            f"  DO NOT draft a bullet yet — wait for the user's answer first.\n"
+            f"  If they seem lost, use the bridge message from the ▸ optimize rules."
         )
 
     if context_parts:
