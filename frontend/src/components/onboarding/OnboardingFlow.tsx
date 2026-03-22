@@ -554,7 +554,18 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
         }),
       });
 
-      if (!res.ok) throw new Error(`/api/analyze returned HTTP ${res.status}`);
+      if (!res.ok) {
+        // Extract the backend's `detail` field so the user sees the real error
+        // (e.g. "LLM Response Truncated") instead of a generic message.
+        let detail = `Analysis failed (HTTP ${res.status}).`;
+        try {
+          const errBody = await res.json();
+          if (typeof errBody?.detail === 'string' && errBody.detail.trim()) {
+            detail = errBody.detail;
+          }
+        } catch { /* json parse failed — use fallback message */ }
+        throw new Error(detail);
+      }
 
       const data: unknown = await res.json();
 
@@ -587,9 +598,13 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
       setApiScore(data.score);
       setApiGaps(data.missingKeywords);
 
-    } catch {
+    } catch (err) {
       // ── 8. CATCH — set error, do NOT advance to workspace ──────────────────
-      setAnalysisError('Analysis failed. Please try again.');
+      // Surface the real backend error (e.g. "LLM Response Truncated") so the
+      // user sees something actionable, not a generic fallback string.
+      const msg = err instanceof Error ? err.message : 'Analysis failed. Please try again.';
+      console.error('[OnboardingFlow] handleAnalyze error:', msg);
+      setAnalysisError(msg);
     } finally {
       // ── 9. FINALLY — always unblock the UI ──────────────────────────────────
       setIsAnalyzing(false);

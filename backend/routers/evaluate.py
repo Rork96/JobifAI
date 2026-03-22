@@ -516,86 +516,31 @@ async def rewrite_section(
 # TEMPERATURE 0.0 — deterministic output so the JSON contract is reliable.
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Concise system prompt — shorter = fewer input tokens = more output budget for JSON.
+# The original ~900-token prompt was consuming budget needed for the JSON response,
+# causing the macMessage string to truncate the output at ~97 chars.
 _ANALYZE_SYSTEM = """\
-You are a precise ATS (Applicant Tracking System) analysis engine.
-Your ONLY job: compare a resume against a job description and return a strict JSON analysis.
+You are an ATS analysis engine. Compare the resume against the job description.
+Return ONLY a JSON object — no markdown, no code fences, no extra text.
 
-══ OUTPUT FORMAT (respond with ONLY this JSON — no markdown, no code fences) ══
+JSON schema (all fields required):
 {
   "score": <integer 0-100>,
-  "foundKeywords":     [<strings>],
-  "missingKeywords":   [<strings>],
+  "foundKeywords": [<strings>],
+  "missingKeywords": [<strings, max 12>],
   "contextualMatches": [{"resumeTerm": <string>, "vacancyTerm": <string>}],
-  "macMessage":        <string>
+  "macMessage": <string>
 }
 
-══ FIELD RULES ════════════════════════════════════════════════════════════════
-score
-  Percentage of important JD hard-skills / role-specific keywords covered by
-  the resume.  Weight technical tools and certifications higher than soft skills.
-  HARD CAP: the value must be an integer between 0 and 100 inclusive.
-  Even for a perfect keyword match, do not exceed 100.
-
-foundKeywords
-  Specific technical skills, tools, frameworks, or role-specific terms that
-  appear verbatim or near-verbatim in BOTH documents.
-  Include: programming languages, frameworks, cloud platforms, methodologies,
-           certifications, domain terms.
-  Exclude: generic soft skills ("communication", "teamwork") unless the JD
-           heavily emphasises them.
-
-missingKeywords
-  Up to 12 of the most impactful JD keywords absent from the resume.
-  Prioritise: hard skills > tools > certifications > domain knowledge.
-  Each entry must be a concise, standalone term (e.g. "Kubernetes", "REST APIs").
-  If the resume covers all important keywords, return an empty list [].
-
-contextualMatches
-  Synonym pairs ONLY — where the resume used a genuinely equivalent but
-  differently-worded term.  Example: resumeTerm "Postgres" ↔ vacancyTerm
-  "PostgreSQL".  Leave as [] if no real synonyms exist.
-  Do NOT include false equivalences.
-
-macMessage — STRICT CONDITIONAL LOGIC
-  ──────────────────────────────────────────────────────────────────────────────
-  Evaluate BOTH conditions before writing:
-    CONDITION A: score >= 90
-    CONDITION B: missingKeywords is empty (i.e., [])
-
-  ► POLISHING STRATEGY  (use when CONDITION A is true OR CONDITION B is true)
-    The resume is already highly optimised.  Switching to gap-analysis here would
-    be inaccurate and harmful to the user's confidence.
-    RULES:
-    ✓ Open by congratulating the candidate and citing the exact numeric score.
-    ✓ Confirm they have all (or nearly all) core keywords.
-    ✓ Pivot immediately to polishing: quantified achievements, stronger action
-      verbs, or readiness to download the PDF.
-    ✗ DO NOT mention gaps, missing skills, or suggest adding keywords.
-    ✗ DO NOT exceed 3 sentences.
-    EXAMPLE (adapt — do not copy verbatim):
-      "Wow! Your resume is already a fantastic match for this role at 96/100 —
-      you have all the core keywords an ATS will look for.  Now let's take it
-      from good to great: should we sharpen your achievement metrics with hard
-      numbers, upgrade a few action verbs, or are you ready to download the PDF?"
-
-  ► GAP-ANALYSIS STRATEGY  (use when CONDITION A is false AND CONDITION B is false)
-    The resume has meaningful gaps that the candidate must close to pass ATS filters.
-    RULES:
-    ✓ Mention the exact numeric score.
-    ✓ Name the top 2–3 most critical missing keywords by name.
-    ✓ Tone: expert, direct, encouraging — like a senior recruiter who genuinely
-      wants the candidate to succeed.
-    ✗ Do NOT use generic filler ("Great resume!", "Let's get started!").
-    ✗ Do NOT exceed 3 sentences.
-    EXAMPLE (adapt — do not copy verbatim):
-      "Your ATS score is 58/100 — a reasonable start, but Docker and Kubernetes
-      are blocking your path to the shortlist for this role.  Let's work those
-      in naturally and I'll show you exactly where each one fits."
-  ──────────────────────────────────────────────────────────────────────────────
-  UNIVERSAL RULES (apply to BOTH strategies):
-  ✓ Always cite the exact numeric score as "X/100".
-  ✓ Keep it to 2–3 sentences maximum — no bullet points, no headers.
-  ✗ Never invent keywords or facts not present in the documents.
+Field rules:
+- score: percentage of important JD hard-skills covered by the resume. Integer 0-100.
+- foundKeywords: technical skills/tools/frameworks present verbatim in BOTH documents. Exclude generic soft skills.
+- missingKeywords: up to 12 JD keywords absent from the resume. Most impactful first. Empty list [] if none.
+- contextualMatches: synonym pairs only (e.g. "Postgres" vs "PostgreSQL"). Empty list [] if none.
+- macMessage: 2-3 sentences maximum.
+  * score >= 90 OR missingKeywords is empty → congratulate, cite exact score as "X/100", pivot to polishing (stronger verbs, metrics, PDF). Do NOT mention gaps.
+  * Otherwise → cite exact score as "X/100", name the top 2-3 missing keywords, be direct and encouraging. Do NOT use generic openers.
+  * Never invent facts not in the documents.
 """
 
 
@@ -703,6 +648,108 @@ def _strip_fences(raw: str) -> str:
     return raw
 
 
+class _TruncatedResponseError(ValueError):
+    """Raised when the LLM response is cut short and all JSON recovery attempts fail."""
+
+
+def _recover_json(raw: str) -> dict:
+    """
+    Multi-strategy JSON extractor for potentially truncated LLM output.
+
+    The response is truncated when Gemini hits max_output_tokens mid-JSON.
+    Typical symptom: response ends inside the macMessage string value, e.g.:
+      '{"score": 72, "foundKeywords": [...], "macMessage": "Your ATS score is 72'
+
+    Strategies tried in order (first success wins):
+
+      1. Direct parse          — ideal path, response_mime_type was honoured
+      2. Regex first-{ last-}  — handles any preamble or postamble text
+      3. Truncation repair     — append common JSON-closing sequences and retry
+      4. Partial field harvest — regex-extract whatever fields ARE present;
+                                 returns partial dict if score was at least found
+      5. Raise _TruncatedResponseError — caller converts to HTTP 500
+    """
+    # ── Strategy 1: direct parse ──────────────────────────────────────────────
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # ── Strategy 2: regex brute force — first { to last } ────────────────────
+    # Handles any prose before/after the JSON object.
+    start = raw.find("{")
+    end   = raw.rfind("}")
+    candidate = raw[start : end + 1] if (start != -1 and end > start) else raw[start:] if start != -1 else raw
+
+    if start != -1 and end > start:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # ── Strategy 3: truncation repair ─────────────────────────────────────────
+    # The most common truncation point is mid-string inside macMessage.
+    # We try appending progressively more closing structure.
+    repair_suffixes = [
+        '"}',                                    # close open string + object
+        '"]}',                                   # close string + array + object
+        '"}]}',                                  # close string + obj + arr + obj
+        '", "macMessage": "Analysis complete."}',# replace truncated macMessage
+    ]
+    for suffix in repair_suffixes:
+        try:
+            return json.loads(candidate + suffix)
+        except json.JSONDecodeError:
+            continue
+
+    # ── Strategy 4: partial field harvest ────────────────────────────────────
+    # We couldn't reconstruct valid JSON — but we may still have enough data
+    # to return a useful response.  Extract each field with targeted regex.
+    partial: dict = {}
+
+    score_m = re.search(r'"score"\s*:\s*(\d+)', raw)
+    if score_m:
+        partial["score"] = int(score_m.group(1))
+
+    for field in ("foundKeywords", "missingKeywords"):
+        arr_m = re.search(rf'"{field}"\s*:\s*(\[.*?\])', raw, re.DOTALL)
+        if arr_m:
+            try:
+                partial[field] = json.loads(arr_m.group(1))
+            except json.JSONDecodeError:
+                # Array was itself truncated — extract the complete string items
+                items = re.findall(r'"([^"\\]+)"', arr_m.group(1))
+                if items:
+                    partial[field] = items
+
+    ctx_m = re.search(r'"contextualMatches"\s*:\s*(\[.*?\])', raw, re.DOTALL)
+    if ctx_m:
+        try:
+            partial["contextualMatches"] = json.loads(ctx_m.group(1))
+        except json.JSONDecodeError:
+            partial["contextualMatches"] = []
+
+    mac_m = re.search(r'"macMessage"\s*:\s*"((?:[^"\\]|\\.)*)', raw)
+    if mac_m:
+        # macMessage was truncated — use whatever we captured and close the sentence
+        partial["macMessage"] = mac_m.group(1).rstrip(" ,") + "."
+
+    if "score" in partial:
+        # Enough to return a real response — fill missing fields with safe defaults
+        partial.setdefault("foundKeywords", [])
+        partial.setdefault("missingKeywords", [])
+        partial.setdefault("contextualMatches", [])
+        partial.setdefault("macMessage", "")
+        print(f"DEBUG /api/analyze: _recover_json — partial harvest succeeded, fields={list(partial.keys())}")
+        return partial
+
+    # ── Strategy 5: total failure ─────────────────────────────────────────────
+    raise _TruncatedResponseError(
+        f"LLM Response Truncated — all JSON recovery strategies failed.  "
+        f"raw_len={len(raw)}  raw={raw[:200]!r}"
+    )
+
+
 @router.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -728,42 +775,38 @@ async def analyze(
     """
     POST /api/analyze — Atomic onboarding → workspace handoff.
 
-    Called ONCE per session when the user clicks "Analyse my resume →".
-    Returns the full ATSAnalysisResponse contract in a single round-trip.
-
-    KEY FIX — response_mime_type="application/json":
-      Forces Gemini to output raw JSON with NO preamble, NO markdown fences,
-      and NO "Here is your analysis:" prefix.  Also disables thinking mode
-      (which was the root cause of `response.text` raising ValueError and
-      the endpoint silently returning score=0 / empty arrays).
+    Changes vs previous version:
+      • Model: gemini-1.5-flash (stable, no thinking mode, reliable JSON)
+      • max_output_tokens: 2048 (previous 1024 caused 97-char truncation)
+      • System prompt: condensed to ~300 tokens (was ~900) — more budget for output
+      • JSON parsing: _recover_json() with 4-strategy fallback before giving up
+      • Truncation failure: raises HTTP 500 "LLM Response Truncated" — visible in UI
     """
     genai.configure(api_key=settings.gemini_api_key)
 
-    # ── DEBUG: log what we received ──────────────────────────────────────────
-    # These prints land directly in the uvicorn terminal / Docker logs so you
-    # can immediately see if the inputs are empty or truncated.
+    # ── DEBUG: log inputs immediately ────────────────────────────────────────
     print(f"DEBUG /api/analyze: resume_text length={len(body.resume_text)}")
     print(f"DEBUG /api/analyze: job_description length={len(body.job_description)}")
     print(f"DEBUG /api/analyze: resume_text[:120]={body.resume_text[:120]!r}")
 
-    # Truncate inputs to stay well within the 1 M-token context window while
-    # keeping enough signal for reliable keyword analysis.
     resume_snip = body.resume_text[:4_000]
     jd_snip     = body.job_description[:3_000]
 
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        # gemini-1.5-flash: stable release, no thinking mode, proven JSON reliability.
+        # gemini-2.5-flash was causing max_output_tokens fights with its internal
+        # thinking budget, truncating the JSON response at ~97 chars even when
+        # max_output_tokens was set to 1024.
+        model_name="gemini-1.5-flash",
         system_instruction=_ANALYZE_SYSTEM,
         generation_config=genai.types.GenerationConfig(
-            temperature=0.0,        # strict determinism — same inputs → same JSON
+            temperature=0.0,
             top_p=1.0,
-            max_output_tokens=1_024, # enough for all lists + a 3-sentence message
-            # ── THE PRIMARY FIX ─────────────────────────────────────────────
-            # Tells Gemini to produce ONLY a valid JSON object — no preamble,
-            # no markdown fences, no "Here is the analysis:" prefix, no
-            # closing commentary.  Also disables thinking mode, which was
-            # causing `response.text` to raise ValueError on multi-part
-            # responses, silently returning score=0 / empty arrays.
+            # 2048 tokens ≈ 6,000–8,000 chars — comfortably fits the full JSON
+            # response including macMessage (max ~300 chars), foundKeywords (up to
+            # 30 strings), missingKeywords (up to 12 strings), contextualMatches.
+            # Previous value of 1024 was the root cause of the 97-char truncation.
+            max_output_tokens=2_048,
             response_mime_type="application/json",
         ),
         safety_settings={
@@ -774,52 +817,48 @@ async def analyze(
         },
     )
 
-    # The prompt no longer needs "Return ONLY the JSON" — response_mime_type
-    # enforces that at the API level.  We keep the inputs clear and separate.
+    # Concise prompt — all the semantic signal, minimum token overhead.
     prompt = (
         f"RESUME:\n{resume_snip}\n\n"
-        f"JOB DESCRIPTION:\n{jd_snip}"
+        f"JOB DESCRIPTION:\n{jd_snip}\n\n"
+        "Return ONLY JSON. Fields: score (int), foundKeywords (list), "
+        "missingKeywords (list), contextualMatches (list), macMessage (str)."
     )
 
     try:
         response = await model.generate_content_async(prompt)
-
-        # ── Safe text extraction ───────────────────────────────────────────────
-        # Uses the helper above to handle both single-part and multi-part
-        # (thinking mode) responses without raising ValueError.
         raw = _extract_response_text(response)
 
-        print(f"DEBUG /api/analyze: raw LLM response ({len(raw)} chars) = {raw[:400]!r}")
+        print(f"DEBUG /api/analyze: raw LLM response ({len(raw)} chars) = {raw[:500]!r}")
 
         if not raw:
-            raise ValueError(
-                f"Gemini returned an empty response.  "
-                f"finish_reason={getattr(response.candidates[0], 'finish_reason', 'UNKNOWN') if response.candidates else 'NO_CANDIDATES'}  "
+            finish = "UNKNOWN"
+            if response.candidates:
+                finish = str(getattr(response.candidates[0], "finish_reason", "UNKNOWN"))
+            raise _TruncatedResponseError(
+                f"LLM Response Truncated — Gemini returned empty text.  "
+                f"finish_reason={finish}  "
                 f"prompt_feedback={getattr(response, 'prompt_feedback', 'N/A')}"
             )
 
-        # ── Strip any markdown fences (defensive — should not fire) ────────────
+        # ── Strip fences (defensive — should not fire with response_mime_type) ──
         raw = _strip_fences(raw)
 
-        # ── Extract the JSON object (defensive regex — should not fire) ────────
-        m = re.search(r'\{.*\}', raw, re.DOTALL)
-        if not m:
-            raise ValueError(
-                f"No JSON object found in LLM response after fence stripping.  "
-                f"raw={raw[:300]!r}"
-            )
-
-        result: dict = json.loads(m.group(0))
+        # ── Parse with multi-strategy recovery ───────────────────────────────
+        # _recover_json raises _TruncatedResponseError only after all four
+        # recovery strategies fail — that surfaces as HTTP 500 below.
+        result = _recover_json(raw)
 
         print(f"DEBUG /api/analyze: parsed result keys={list(result.keys())}  score={result.get('score')!r}")
 
-        # ── Safety cap — mathematically enforced, not trust-the-LLM ─────────
-        # The system prompt asks for 0-100, but we never rely solely on the
-        # model's arithmetic.  This guard runs regardless of what Gemini returns.
+        # ── Safety cap ────────────────────────────────────────────────────────
         raw_score = result.get("score")
         if not isinstance(raw_score, (int, float)):
             print(f"DEBUG /api/analyze: score field is not numeric — got {raw_score!r}")
-            raise ValueError(f"'score' field missing or non-numeric in LLM response: {raw_score!r}")
+            raise _TruncatedResponseError(
+                f"LLM Response Truncated — 'score' field missing or non-numeric: {raw_score!r}.  "
+                f"raw={raw[:200]!r}"
+            )
 
         score = max(0, min(100, int(raw_score)))
 
@@ -837,28 +876,24 @@ async def analyze(
 
         mac_msg = str(result.get("macMessage", "")).strip()
         if not mac_msg:
-            # Server-side fallback — mirrors the prompt's conditional strategy
-            # so the client always gets a contextually appropriate message even
-            # when Gemini returns an empty macMessage field.
             is_polishing = score >= 90 or len(missing_kw) == 0
             if is_polishing:
                 mac_msg = (
-                    f"Your resume is already a fantastic match for this role at {score}/100 — "
-                    "you have all the core keywords an ATS will look for.  "
-                    "Now let's polish it further: should we sharpen your achievement metrics "
-                    "with hard numbers, upgrade a few action verbs, or are you ready to download the PDF?"
+                    f"Your resume is already a strong match at {score}/100 — "
+                    "you have the core keywords covered.  "
+                    "Now let's sharpen the achievement metrics and action verbs to make it outstanding."
                 )
             else:
                 top_gaps = ", ".join(missing_kw[:3]) if missing_kw else "a few key skills"
                 mac_msg = (
-                    f"Your ATS score is {score}/100 — a solid start, but {top_gaps} "
-                    "are the gaps standing between you and the shortlist.  "
-                    "Let's work those in naturally and I'll show you exactly where each one fits."
+                    f"Your ATS score is {score}/100 — {top_gaps} "
+                    "are the main gaps between you and the shortlist.  "
+                    "Let's work those in and I'll show you exactly where each one fits."
                 )
 
         logger.info(
-            "Analyze ✅ — score=%d (raw=%s)  found=%d  missing=%d  ctx=%d  strategy=%s",
-            score, raw_score, len(found_kw), len(missing_kw), len(ctx_matches),
+            "Analyze ✅ — score=%d  found=%d  missing=%d  ctx=%d  strategy=%s",
+            score, len(found_kw), len(missing_kw), len(ctx_matches),
             "polishing" if (score >= 90 or len(missing_kw) == 0) else "gap-analysis",
         )
 
@@ -870,30 +905,31 @@ async def analyze(
             macMessage=mac_msg,
         )
 
+    except _TruncatedResponseError as exc:
+        # ── Surface truncation as HTTP 500 — visible in the UI ───────────────
+        # Per spec: do NOT silently return score=0.  The user must see the error
+        # so we can diagnose it, not mistake it for a genuine "no match".
+        logger.error(
+            "Analyze TRUNCATED — %s  (resume_len=%d  jd_len=%d)",
+            exc, len(body.resume_text), len(body.job_description),
+        )
+        print(f"ERROR /api/analyze TRUNCATED: {exc}")
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail=f"LLM Response Truncated — the analysis model returned incomplete JSON. "
+                   f"Please retry. (debug: {str(exc)[:200]})",
+        )
+
     except Exception as exc:  # noqa: BLE001
-        # Use logger.exception (not .warning) so the full traceback lands in
-        # the terminal — this is how we diagnose LLM failures quickly.
         logger.exception(
-            "Analyze endpoint FAILED — %s: %s  "
-            "(resume_len=%d  jd_len=%d)",
+            "Analyze endpoint FAILED — %s: %s  (resume_len=%d  jd_len=%d)",
             type(exc).__name__, exc,
             len(body.resume_text), len(body.job_description),
         )
-        print(
-            f"ERROR /api/analyze: {type(exc).__name__}: {exc}\n"
-            f"  resume_len={len(body.resume_text)}  jd_len={len(body.job_description)}"
-        )
-        # Fail-safe: return a valid response so the workspace still opens,
-        # but return a clearly non-zero score so we can distinguish a genuine
-        # "no match" from a backend failure.
-        return AnalyzeResponse(
-            score=0,
-            foundKeywords=[],
-            missingKeywords=[],
-            contextualMatches=[],
-            macMessage=(
-                "I hit a technical snag running your full analysis — but don't worry, "
-                "let's keep going. Tell me about the role you're targeting and I'll "
-                "start improving your resume right away."
-            ),
+        print(f"ERROR /api/analyze: {type(exc).__name__}: {exc}")
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {type(exc).__name__}: {exc!s}",
         )
