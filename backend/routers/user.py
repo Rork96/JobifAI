@@ -109,23 +109,33 @@ async def get_authenticated_user_id(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has unexpected audience (expected 'authenticated').",
             )
+        except pyjwt.exceptions.InvalidAlgorithmError as exc:
+            # The token's alg header isn't HS256 (e.g. project uses RS256).
+            # HS256 assumption is wrong — fall through to Strategy B so the
+            # Supabase Auth API can validate it regardless of algorithm.
+            logger.warning(
+                "JWT alg mismatch — token is not HS256, falling back to Auth API: %s",
+                exc,
+            )
+            # jump to Strategy B below by skipping the return
         except pyjwt.InvalidTokenError as exc:
             # Covers InvalidSignatureError, DecodeError, etc.
+            # These are definitive rejections — the token is malformed or tampered.
             logger.warning("JWT local decode failed: %s: %s", type(exc).__name__, exc)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid token: {type(exc).__name__}",
             ) from exc
-
-        user_id: str | None = payload.get("sub")
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token is missing the 'sub' claim.",
-            )
-
-        logger.debug("JWT validated locally — user=%s", user_id)
-        return user_id
+        else:
+            # Strategy A succeeded — extract sub and return immediately.
+            user_id: str | None = payload.get("sub")
+            if not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token is missing the 'sub' claim.",
+                )
+            logger.debug("JWT validated locally — user=%s", user_id)
+            return user_id
 
     # ── Strategy B: Supabase Auth API (fallback when no JWT secret) ──────────
     logger.debug(
@@ -152,16 +162,14 @@ async def get_authenticated_user_id(
         raise
 
     except Exception as exc:
-        # Log the real exception type + message so we can diagnose it rather
-        # than seeing only the generic 401 in production logs.
-        logger.warning(
+        logger.exception(
             "Auth API validation failed — %s: %s",
             type(exc).__name__,
             exc,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Could not validate credentials ({type(exc).__name__}).",
+            detail=f"Supabase API Error: {exc}",
         ) from exc
 
 
