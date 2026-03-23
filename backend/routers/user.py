@@ -35,15 +35,26 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 import jwt as pyjwt  # PyJWT — local HS256 decode; avoids network round-trip per request
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
+from supabase import Client, create_client
 
 from ..config import Settings, get_settings
 
 logger = logging.getLogger("jobifai.user")
+
+# ─── Cached Supabase client ────────────────────────────────────────────────────
+# Created once per process (lru_cache on a Settings-keyed call), reused on every
+# request.  Avoids spawning a new HTTP connection pool on every auth check.
+@lru_cache(maxsize=1)
+def _get_supabase_client(url: str, key: str) -> Client:
+    """Return a module-level singleton Supabase client keyed on url+key."""
+    return create_client(url, key)
+
 
 # ─── Router ───────────────────────────────────────────────────────────────────
 router = APIRouter(
@@ -137,16 +148,19 @@ async def get_authenticated_user_id(
             logger.debug("JWT validated locally — user=%s", user_id)
             return user_id
 
-    # ── Strategy B: Supabase Auth API (fallback when no JWT secret) ──────────
-    logger.debug(
-        "SUPABASE_JWT_SECRET not set — falling back to Auth API validation "
-        "(set it for faster, network-free token checks)"
+    # ── Strategy B: Supabase Auth API (fallback — handles RS256 / unknown alg) ─
+    _key = settings.supabase_key or ""
+    print(
+        f"DEBUG auth: SUPABASE_KEY len={len(_key)}, "
+        f"prefix={_key[:20]!r}, url={settings.supabase_url!r}"
+    )
+    logger.warning(
+        "Strategy B — Auth API validation — key_len=%d key_prefix=%r url=%s",
+        len(_key), _key[:20], settings.supabase_url,
     )
     try:
-        from supabase import create_client  # type: ignore[import-untyped]
-
-        # Use the service-role key so the admin client can call auth.get_user().
-        client = create_client(settings.supabase_url, settings.supabase_key)
+        # Reuse the cached client — never call create_client() per request.
+        client = _get_supabase_client(settings.supabase_url, settings.supabase_key)
         resp = client.auth.get_user(token)
 
         if not resp or not resp.user:

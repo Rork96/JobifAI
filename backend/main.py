@@ -60,6 +60,16 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     logger.info("🚀  JobifAI backend starting — env=%s", settings.environment)
     logger.info("🔗  Supabase URL: %s", settings.supabase_url)
 
+    # ── Key diagnostic (startup) ──────────────────────────────────────────────
+    # Prints key shape so truncated / wrong keys are caught immediately on boot.
+    # Remove once auth is confirmed stable.
+    _key = settings.supabase_key or ""
+    print(
+        f"DEBUG startup: SUPABASE_KEY len={len(_key)}, "
+        f"prefix={_key[:20]!r}, "
+        f"looks_like_jwt={'.' in _key and _key.startswith('eyJ')}"
+    )
+
     # ── Gemini SDK global configuration ──────────────────────────────────────
     # `genai.configure()` sets the API key once for the entire process.
     # The ai_service module calls `genai.GenerativeModel()` per-request, so
