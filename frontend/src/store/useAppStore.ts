@@ -27,6 +27,7 @@
 
 import { create, type StateCreator } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { supabase } from '@/lib/supabase';
 import type {
   User,
   LanguageCode,
@@ -36,6 +37,8 @@ import type {
   ExperienceEntry,
   EducationEntry,
   ATSAnalysisResponse,
+  AppMode,
+  AppStatus,
 } from '@/types';
 import { INTERVIEW_STEP_ORDER } from '@/types';
 
@@ -90,10 +93,73 @@ interface AuthSlice {
    */
   isSaving: boolean;
 
+  /**
+   * Unix timestamp (ms) of the last successful cloud sync.
+   * Null before the first successful save.
+   * Used by the TopBar "Saved to cloud" indicator.
+   */
+  lastSyncedAt: number | null;
+
+  /**
+   * Non-null when the most recent cloud sync failed.
+   * The TopBar displays this as a transient, dismissable red pill.
+   * Automatically cleared after 6 seconds or on the next successful sync.
+   * COMPLETELY decoupled from isAnalyzing / isGeneratingPdf — a save
+   * failure must never obscure the resume preview or the coaching UI.
+   */
+  syncError: string | null;
+
+  /**
+   * Debounced cloud save — schedules a POST /api/user/save-progress in 3 s.
+   *
+   * Called internally by `updateResumeData`, `addMessage`, and `setAnalysisResult`
+   * whenever meaningful state changes.  Callers never need to call this directly
+   * (though they can to trigger an immediate debounce window reset).
+   *
+   * Guard: skips silently if the user is not signed in.
+   * Guard: skips if resumeData is empty AND messages is empty (nothing to save).
+   *
+   * The 3-second debounce collapses rapid successive changes (e.g. streaming
+   * tokens) into a single network request.
+   */
+  syncToSupabase: () => void;
+
+  /**
+   * Delete the user's cloud row (DELETE /api/user/clear-data) and reset the
+   * local Zustand store to IDLE.
+   *
+   * Called by the "Clear All Data" button in Settings.
+   * Network failure is logged but does NOT block the local reset — the user
+   * always gets a clean local state regardless of server availability.
+   */
+  clearCloudData: () => Promise<void>;
+
   setUser:          (user: User | null) => void;
   setIsPremium:     (premium: boolean) => void;
   setIsAuthLoading: (loading: boolean) => void;
   setIsSaving:      (saving: boolean) => void;
+  setSyncError:     (error: string | null) => void;
+
+  /**
+   * Apply a promotional code to unlock premium features for the session.
+   *
+   * Returns `true` if the code was recognised and the unlock was applied,
+   * `false` if the code is invalid (caller can show an error toast).
+   *
+   * Side effects on success:
+   *   • Sets `isPremium = true` in the store immediately.
+   *   • Persists a flag to localStorage so the unlock survives page refreshes.
+   *     (localStorage may be unavailable in private/incognito mode — the in-
+   *     memory unlock still applies for the current session in that case.)
+   *
+   * Valid codes: 'START2026'
+   *
+   * Usage in a component:
+   *   const applyPromoCode = useAppStore(s => s.applyPromoCode);
+   *   const ok = applyPromoCode(inputValue);
+   *   if (!ok) showToast('Invalid promo code');
+   */
+  applyPromoCode: (code: string) => boolean;
 
   /** Called on sign-out — wipes all auth state. */
   clearAuth: () => void;
@@ -128,6 +194,30 @@ interface LangSlice {
 
 // ── Onboarding Slice ──────────────────────────────────────────────────────────
 interface OnboardingSlice {
+  // ── Unified App State Machine ──────────────────────────────────────────────
+  /**
+   * The operating mode — set once the user commits to a path and the workspace
+   * mounts. OPTIMIZE = upload/coaching path; SCRATCH = build-from-zero path.
+   * null before onboarding completes.
+   *
+   * This is the authoritative mode used by:
+   *   • ChatPanel to compute `effectiveStep` and the API `mode` field.
+   *   • PersonaFactory (backend) to select the correct system instruction tier.
+   *   • DocumentPreview to decide which ghost keyword variant to show.
+   */
+  appMode: AppMode | null;
+
+  /**
+   * The lifecycle status of the current session.
+   * Driven by `transitionTo(newStatus)` — never set directly.
+   *
+   *   IDLE      → no AI in flight, workspace at rest
+   *   ANALYZING → POST /api/analyze in-flight (spinner on onboarding CTA)
+   *   COACHING  → inside the OPTIMIZE workspace, Mac is coaching
+   *   BUILDING  → inside the SCRATCH interview, Mac is interviewing
+   */
+  appStatus: AppStatus;
+
   /**
    * Which path the user chose at Step 2 of the onboarding fork.
    *   'upload'  → user has an existing resume draft + optional JD
@@ -216,6 +306,31 @@ interface OnboardingSlice {
    */
   setAnalysisResult: (result: ATSAnalysisResponse | null) => void;
 
+  /**
+   * Explicitly set the operating mode.  Usually called by setOnboardingMode,
+   * but can be called directly if the mode needs to change without an
+   * onboarding path change (e.g. admin override in tests).
+   */
+  setAppMode: (mode: AppMode) => void;
+
+  /**
+   * THE CENTRAL STATE TRANSITION ACTION.
+   *
+   * Always use this instead of setting `appStatus` directly.  It performs
+   * mode-aware cleanup so components never see stale cross-slice state:
+   *
+   *   → IDLE       clears isGenerating + isAnalyzing
+   *   → ANALYZING  enables isAnalyzing, clears analysisError
+   *   → COACHING   if switching FROM BUILDING: resets interview messages,
+   *                step, and resumeData (user is switching modes mid-session)
+   *   → BUILDING   if switching FROM COACHING: clears analysisResult,
+   *                currentAtsScore, and interview messages (clean slate)
+   *
+   * Components subscribe to `appStatus` and react to state changes
+   * declaratively — they do NOT call individual cleanup actions themselves.
+   */
+  transitionTo: (newStatus: AppStatus) => void;
+
   setOnboardingMode:     (mode: 'upload' | 'scratch') => void;
   setUploadedResumeText: (text: string) => void;
   setJobDescription:     (jd: string) => void;
@@ -232,6 +347,24 @@ interface OnboardingSlice {
   setSkillGaps:          (gaps: string[]) => void;
   setMatchedSkills:      (skills: string[]) => void;
   setMissingSkills:      (skills: Array<{ skill: string; impact_percentage: number }>) => void;
+
+  /**
+   * SCRATCH → OPTIMIZE Grand Transition.
+   *
+   * Fires automatically when the progressive build score reaches 100
+   * (all five resume sections filled in SCRATCH mode).  Orchestrates:
+   *
+   *   1. Injects Mac's "Foundation built! 🧱" bridge message into the chat.
+   *   2. Switches appMode to 'OPTIMIZE' and appStatus to 'ANALYZING'.
+   *   3. POSTs /api/analyze with the freshly built resumeData.
+   *   4. On success: setAnalysisResult() atomically overwrites the
+   *      progressive fake-100 score with the real ATS score AND transitions
+   *      appStatus → 'COACHING', surfacing Ghost Gaps + the keyword carousel.
+   *
+   * Self-guarding: the initial `appMode === 'SCRATCH'` check + immediate
+   * transition to 'ANALYZING' prevents any re-trigger within the same session.
+   */
+  completeScratchMode: () => Promise<void>;
 }
 
 // ── Interview Slice ───────────────────────────────────────────────────────────
@@ -430,19 +563,205 @@ function deepMergeResumeData(
 //   SliceType  → the shape this factory returns
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Cloud Sync Debounce Timer ─────────────────────────────────────────────────
+// Module-level so it persists across React renders and store re-creations.
+// Cleared and reset on every syncToSupabase() call — only the last call in
+// a 3-second quiet window actually fires the network request.
+let _syncTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── Promo Code Config ─────────────────────────────────────────────────────────
+// Centralised so adding a new code is a one-line change here.
+// Codes are compared case-insensitively after trimming.
+const PROMO_CODES = new Set(['START2026']);
+
+// Key used to persist the promo unlock across page refreshes.
+// Stored in localStorage — safe to change if we ever want to invalidate old
+// persisted sessions (e.g. when a code expires: change the key name).
+const PROMO_STORAGE_KEY = 'jobifai_promo_v1';
+
+/**
+ * Read the persisted promo unlock from localStorage.
+ * Returns true if a valid unlock record exists.
+ * Wrapped in try/catch because localStorage throws in some privacy contexts.
+ */
+function readPersistedPromo(): boolean {
+  try {
+    return localStorage.getItem(PROMO_STORAGE_KEY) === 'unlocked';
+  } catch {
+    return false;
+  }
+}
+
 // ── Auth Slice Factory ────────────────────────────────────────────────────────
-const createAuthSlice: StateCreator<AppStore, [], [], AuthSlice> = (set) => ({
+const createAuthSlice: StateCreator<AppStore, [], [], AuthSlice> = (set, get) => ({
   user:          null,
-  isPremium:     false,
+  // Hydrate isPremium from localStorage on store creation so a promo-unlocked
+  // user stays unlocked after a page refresh without re-entering the code.
+  isPremium:     readPersistedPromo(),
   isAuthLoading: true,  // Start true — we verify session on mount before showing UI
   isSaving:      false,
+  lastSyncedAt:  null,
+  syncError:     null,
+
+  // ── Cloud Sync ─────────────────────────────────────────────────────────────
+
+  setSyncError: (syncError) => set({ syncError }),
+
+  syncToSupabase: () => {
+    // Reset the debounce window on every call
+    if (_syncTimer) clearTimeout(_syncTimer);
+
+    _syncTimer = setTimeout(async () => {
+      _syncTimer = null;
+
+      // Bail out if the user is not signed in — no token, no sync.
+      // supabase.auth.getSession() can itself throw a JSON parse error when
+      // the Supabase server returns an empty / malformed response (network
+      // blip, CDN edge cache issue).  Wrap in try/catch so a session-refresh
+      // failure never propagates as an unhandled promise rejection.
+      let sessionToken: string | undefined;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        sessionToken = session?.access_token;
+      } catch (sessionErr) {
+        console.warn('[Store] getSession() threw — skipping sync:', sessionErr);
+        return;
+      }
+      if (!sessionToken) return;
+
+      const s = useAppStore.getState();
+
+      // Skip if there is nothing meaningful to persist
+      const hasResume   = Object.keys(s.resumeData).length > 0;
+      const hasMessages = s.messages.length > 0;
+      if (!hasResume && !hasMessages) return;
+
+      set({ isSaving: true, syncError: null });
+
+      try {
+        const body = {
+          resume_data:     s.resumeData,
+          analysis_result: s.analysisResult ?? null,
+          ats_score:       s.currentAtsScore > 0 ? s.currentAtsScore : null,
+          // Strip ephemeral fields (id, timestamp) — backend only needs role+content
+          messages: s.messages.map((m) => ({ role: m.role, content: m.content })),
+        };
+
+        const res = await fetch('/api/user/save-progress', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${sessionToken}`,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+          // Read the error body as text first — the server might return HTML
+          // (e.g. a 502 from nginx) rather than JSON.  Never call .json()
+          // unconditionally on a non-2xx response.
+          const errText = await res.text().catch(() => `HTTP ${res.status}`);
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+
+        // Only parse the response body if the server says it's JSON.
+        // A 204 No Content or an unexpected content-type must not crash here.
+        const ct = res.headers.get('content-type') ?? '';
+        if (ct.includes('application/json')) {
+          // Consume the body to avoid a "body already read" error on keep-alive
+          await res.json().catch(() => {/* non-fatal — lastSyncedAt is what matters */});
+        }
+
+        set({ lastSyncedAt: Date.now(), syncError: null });
+        console.log('[Store] ☁ Cloud sync ✓', new Date().toLocaleTimeString());
+
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Store] Cloud sync error:', msg);
+        // Surface the error as a transient banner; auto-clear after 6 s so it
+        // never permanently obscures the resume preview or the coaching UI.
+        set({ syncError: `Failed to save: ${msg.slice(0, 120)}` });
+        setTimeout(() => {
+          // Only clear if the same error is still shown (a newer sync may have
+          // already replaced it with a success or a different error).
+          useAppStore.setState((cur) =>
+            cur.syncError?.startsWith('Failed to save:') ? { syncError: null } : {},
+          );
+        }, 6_000);
+      } finally {
+        set({ isSaving: false });
+      }
+    }, 3_000); // 3-second debounce
+  },
+
+  clearCloudData: async () => {
+    // Cancel any pending debounced save — no point syncing data we're about to nuke
+    if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+
+    // Best-effort server delete — don't block the local reset on network issues
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      try {
+        await fetch('/api/user/clear-data', {
+          method:  'DELETE',
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        console.log('[Store] ☁ Cloud data cleared');
+      } catch (err) {
+        console.error('[Store] clearCloudData network error:', err);
+      }
+    }
+
+    // Atomically reset all session state — user sees a clean workspace
+    get().transitionTo('IDLE');
+    set({
+      resumeData:      {},
+      messages:        [],
+      analysisResult:  null,
+      currentAtsScore: 0,
+      realAtsScore:    null,
+      skillGaps:       [],
+      matchedSkills:   [],
+      missingSkills:   [],
+      lastSyncedAt:    null,
+      syncError:       null,
+      onboardingMode:  null,
+      appMode:         null,
+    });
+  },
+
+  // ── Standard auth actions ──────────────────────────────────────────────────
 
   setUser:          (user)      => set({ user }),
   setIsPremium:     (isPremium) => set({ isPremium }),
   setIsAuthLoading: (isAuthLoading) => set({ isAuthLoading }),
   setIsSaving:      (isSaving) => set({ isSaving }),
 
-  clearAuth: () => set({ user: null, isPremium: false, isAuthLoading: false }),
+  applyPromoCode: (code: string): boolean => {
+    const normalised = code.trim().toUpperCase();
+    if (!PROMO_CODES.has(normalised)) return false;
+
+    // Apply the unlock immediately in-memory
+    set({ isPremium: true });
+
+    // Persist so the unlock survives a page refresh
+    try {
+      localStorage.setItem(PROMO_STORAGE_KEY, 'unlocked');
+    } catch {
+      // localStorage unavailable (private mode, storage quota, etc.)
+      // The in-memory unlock still applies for this session.
+    }
+
+    return true;
+  },
+
+  clearAuth: () => {
+    // Sign-out: wipe auth state AND any persisted promo unlock so the next
+    // user on the same device starts fresh.
+    if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+    try { localStorage.removeItem(PROMO_STORAGE_KEY); } catch { /* ignore */ }
+    set({ user: null, isPremium: false, isAuthLoading: false, lastSyncedAt: null, syncError: null });
+  },
 });
 
 // ── Language Slice Factory ─────────────────────────────────────────────────────
@@ -485,7 +804,73 @@ const createLangSlice: StateCreator<AppStore, [], [], LangSlice> = (set) => {
 };
 
 // ── Onboarding Slice Factory ───────────────────────────────────────────────────
-const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (set) => ({
+const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (set, get) => ({
+  // ── Unified App State Machine ──────────────────────────────────────────────
+  appMode:   null,
+  appStatus: 'IDLE',
+
+  setAppMode: (appMode) => set({ appMode }),
+
+  transitionTo: (newStatus: AppStatus) => {
+    const current = get().appStatus;
+
+    switch (newStatus) {
+      case 'IDLE':
+        // Hard reset — clear all transient AI state
+        set({ appStatus: 'IDLE', isGenerating: false, isAnalyzing: false });
+        return;
+
+      case 'ANALYZING':
+        // Analysis starting — enable spinner, clear any previous error
+        set({ appStatus: 'ANALYZING', isAnalyzing: true, analysisError: null });
+        return;
+
+      case 'COACHING':
+        // Entering the OPTIMIZE workspace.
+        // ALWAYS clears isAnalyzing — it is impossible to be analyzing and
+        // coaching simultaneously.  Forgetting this leaves isAnalyzing: true
+        // after a completeScratchMode() failure (which calls transitionTo
+        // 'ANALYZING' then 'COACHING' on error), causing the "Analysis failed"
+        // banner to render in the workspace even though the save was at fault.
+        // If we're switching FROM a BUILDING session (scratch mode), also wipe
+        // the interview state so Mac doesn't inherit irrelevant messages.
+        if (current === 'BUILDING') {
+          set({
+            appStatus:    'COACHING',
+            messages:     [],
+            currentStep:  'idle',
+            resumeData:   {},
+            isGenerating: false,
+            isAnalyzing:  false,
+            analysisError: null,
+          });
+        } else {
+          set({ appStatus: 'COACHING', isGenerating: false, isAnalyzing: false, analysisError: null });
+        }
+        return;
+
+      case 'BUILDING':
+        // Entering the SCRATCH interview workspace.
+        // If we're switching FROM a COACHING session (optimize mode), wipe the
+        // ATS analysis state so the score ring doesn't show a stale score.
+        if (current === 'COACHING') {
+          set({
+            appStatus:      'BUILDING',
+            messages:       [],
+            analysisResult: null,
+            currentAtsScore: 0,
+            isGenerating:   false,
+          });
+        } else {
+          set({ appStatus: 'BUILDING', isGenerating: false });
+        }
+        return;
+
+      default:
+        set({ appStatus: newStatus });
+    }
+  },
+
   // ── Atomic analysis state ──────────────────────────────────────────────────
   isAnalyzing:   false,
   analysisError: null,
@@ -494,16 +879,20 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   setIsAnalyzing:   (isAnalyzing)   => set({ isAnalyzing }),
   setAnalysisError: (analysisError) => set({ analysisError }),
 
-  // Atomic write: setting analysisResult also syncs currentAtsScore in ONE
-  // Zustand transaction so no component ever sees analysisResult with a stale score.
+  // Atomic write: setting analysisResult also syncs currentAtsScore AND
+  // transitions to COACHING status in ONE Zustand transaction.
   setAnalysisResult: (analysisResult) => {
     if (analysisResult !== null) {
       console.log('[Store] ATS Score Sync:', analysisResult.score);
     }
     set({
       analysisResult,
-      ...(analysisResult !== null ? { currentAtsScore: analysisResult.score } : {}),
+      ...(analysisResult !== null
+        ? { currentAtsScore: analysisResult.score, appStatus: 'COACHING' }
+        : {}),
     });
+    // Persist the analysis result so the score ring + ghost keywords survive a refresh
+    if (analysisResult !== null) get().syncToSupabase();
   },
 
   // ── Onboarding fields ──────────────────────────────────────────────────────
@@ -516,7 +905,11 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   matchedSkills:       [],
   missingSkills:       [],
 
-  setOnboardingMode:     (onboardingMode)     => set({ onboardingMode }),
+  // setOnboardingMode also derives appMode so both are always in sync.
+  setOnboardingMode: (onboardingMode) => set({
+    onboardingMode,
+    appMode: onboardingMode === 'upload' ? 'OPTIMIZE' : 'SCRATCH',
+  }),
   setUploadedResumeText: (uploadedResumeText) => set({ uploadedResumeText }),
   setJobDescription:     (jobDescription)     => set({ jobDescription }),
 
@@ -546,6 +939,118 @@ const createOnboardingSlice: StateCreator<AppStore, [], [], OnboardingSlice> = (
   setSkillGaps:     (skillGaps)     => set({ skillGaps }),
   setMatchedSkills: (matchedSkills) => set({ matchedSkills }),
   setMissingSkills: (missingSkills) => set({ missingSkills }),
+
+  // ── SCRATCH → OPTIMIZE Grand Transition ─────────────────────────────────────
+  completeScratchMode: async () => {
+    const state = get();
+
+    // ── Guard ─────────────────────────────────────────────────────────────────
+    // Only fires once, from inside a live SCRATCH BUILDING session.
+    // The immediate transitionTo('ANALYZING') call changes appStatus away from
+    // 'BUILDING', so any re-entry within the same event loop is a no-op.
+    if (state.appMode !== 'SCRATCH' || state.appStatus !== 'BUILDING') return;
+
+    const resumeData     = state.resumeData;
+    const jobDescription = state.jobDescription ?? '';
+
+    // Require at least a title + one experience before launching analysis.
+    // An empty resumeData would produce a meaningless 0% score.
+    if (!resumeData.targetTitle?.trim()) return;
+
+    // ── 1. Bridge message ────────────────────────────────────────────────────
+    // Injected BEFORE mode-switch so the user sees it in context before the
+    // Analyzing state replaces the input bar.
+    const now = Date.now();
+    const bridgeMsg: ChatMessage = {
+      id:        `bridge_${now}`,
+      role:      'assistant',
+      content:   'Foundation built! 🧱 Now, I\'m running your new resume through '
+               + 'the strict ATS scanner to find the gaps we need to close…',
+      timestamp: now,
+    };
+    set((s) => ({ messages: [...s.messages, bridgeMsg] }));
+
+    // ── 2. Switch mode + start analysis spinner ──────────────────────────────
+    set({ appMode: 'OPTIMIZE' });
+    get().transitionTo('ANALYZING');
+
+    // ── 3. POST /api/analyze ─────────────────────────────────────────────────
+    // Send the resume as pretty-printed JSON — Gemini handles structured text
+    // just as well as plain prose, and this preserves field names for context.
+    const resumeText = JSON.stringify(resumeData, null, 2);
+
+    try {
+      const res = await fetch('/api/analyze', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          resume_text:     resumeText,
+          job_description: jobDescription,
+        }),
+      });
+
+      if (!res.ok) {
+        // Read as text — never call .json() on a non-2xx response body
+        const errText = await res.text().catch(() => `HTTP ${res.status}`);
+        console.warn('[Store] completeScratchMode — /api/analyze HTTP', res.status, errText.slice(0, 200));
+        get().transitionTo('COACHING'); // unblock UI
+        return;
+      }
+
+      // Guard: only parse JSON if the server actually says so.
+      // An empty body (204), a text/html error page, or a network-level
+      // response with no content-type would all throw a cryptic
+      // "JSON.parse: unexpected end of data" if we called .json() blindly.
+      const ct = res.headers.get('content-type') ?? '';
+      if (!ct.includes('application/json')) {
+        console.warn('[Store] completeScratchMode — unexpected content-type:', ct || '(none)');
+        get().transitionTo('COACHING');
+        return;
+      }
+
+      const data: unknown = await res.json();
+
+      // ── 4. Atomic overwrite ──────────────────────────────────────────────
+      // setAnalysisResult() does THREE things in ONE Zustand transaction:
+      //   a) sets analysisResult
+      //   b) overwrites currentAtsScore with the real score
+      //   c) transitions appStatus → 'COACHING'  ← surfaces Ghost Gaps + carousel
+      if (
+        data &&
+        typeof data === 'object' &&
+        typeof (data as Record<string, unknown>).score    === 'number' &&
+        Array.isArray((data as Record<string, unknown>).foundKeywords) &&
+        Array.isArray((data as Record<string, unknown>).missingKeywords)
+      ) {
+        const analysis = data as ATSAnalysisResponse;
+
+        get().setAnalysisResult(analysis);   // score + COACHING transition
+
+        // Populate the skill-gap checklist
+        const gap   = Math.max(0, 100 - analysis.score);
+        const count = Math.max(analysis.missingKeywords.length, 1);
+        set({
+          skillGaps:     analysis.missingKeywords,
+          matchedSkills: analysis.foundKeywords,
+          missingSkills: analysis.missingKeywords.map((kw, i) => ({
+            skill:             kw,
+            impact_percentage: Math.max(2, Math.round(gap / count) - i),
+          })),
+        });
+
+        console.warn(
+          `[Store] ✅ Grand Transition complete — real ATS score: ${analysis.score} `
+          + `| gaps: ${analysis.missingKeywords.length}`,
+        );
+      } else {
+        console.warn('[Store] completeScratchMode — unexpected API shape:', data);
+        get().transitionTo('COACHING');
+      }
+    } catch (err) {
+      console.error('[Store] completeScratchMode fetch error:', err);
+      get().transitionTo('COACHING'); // never leave user stuck on ANALYZING
+    }
+  },
 });
 
 // ── Interview Slice Factory ────────────────────────────────────────────────────
@@ -587,6 +1092,8 @@ const createInterviewSlice: StateCreator<AppStore, [], [], InterviewSlice> = (se
     // If two messages arrive in the same render cycle, this ensures both
     // are appended correctly rather than the second overwriting the first.
     set((state) => ({ messages: [...state.messages, newMessage] }));
+    // Trigger debounced cloud save after every new message
+    get().syncToSupabase();
   },
 
   // ── Resume Data ─────────────────────────────────────────────────────────────
@@ -596,6 +1103,8 @@ const createInterviewSlice: StateCreator<AppStore, [], [], InterviewSlice> = (se
     set((state) => ({
       resumeData: deepMergeResumeData(state.resumeData, update),
     }));
+    // Trigger debounced cloud save — collapses rapid AI token updates
+    get().syncToSupabase();
   },
 
   addExperience: (entry) => {
@@ -725,6 +1234,8 @@ if (import.meta.env.DEV) {
   (window as any).atsDebug = () => {
     const s = useAppStore.getState();
     console.group('%c[atsDebug] JobifAI Store Snapshot', 'color: #f97316; font-weight: bold');
+    console.log('appMode         :', s.appMode);
+    console.log('appStatus       :', s.appStatus);
     console.log('currentAtsScore :', s.currentAtsScore);
     console.log('realAtsScore    :', s.realAtsScore);
     console.log('analysisResult  :', s.analysisResult);
@@ -734,8 +1245,10 @@ if (import.meta.env.DEV) {
     console.log('resumeData      :', s.resumeData);
     console.log('messages.length :', s.messages.length);
     console.log('isPremium       :', s.isPremium);
+    console.log('isSaving        :', s.isSaving);
+    console.log('lastSyncedAt    :', s.lastSyncedAt ? new Date(s.lastSyncedAt).toLocaleTimeString() : null);
     console.groupEnd();
-    return s; // return the full state so DevTools can inspect nested objects
+    return s;
   };
   console.info('%c[JobifAI] atsDebug() available in console', 'color: #f97316');
 }
@@ -774,3 +1287,17 @@ export const selectIsAuthenticated = (s: AppStore): boolean =>
 /** The number of experience entries collected so far. */
 export const selectExperienceCount = (s: AppStore): number =>
   s.resumeData.experiences?.length ?? 0;
+
+/**
+ * True when the app is in the OPTIMIZE workspace (not just onboarding).
+ * Use this in components instead of checking onboardingMode === 'upload'
+ * — it correctly accounts for mid-session mode switches via transitionTo().
+ */
+export const selectIsOptimizeMode = (s: AppStore): boolean =>
+  s.appMode === 'OPTIMIZE' && s.appStatus === 'COACHING';
+
+/**
+ * True when the app is in the SCRATCH interview workspace.
+ */
+export const selectIsBuildMode = (s: AppStore): boolean =>
+  s.appMode === 'SCRATCH' && s.appStatus === 'BUILDING';

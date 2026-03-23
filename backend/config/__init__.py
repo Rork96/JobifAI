@@ -8,6 +8,14 @@ Pydantic BaseSettings reads values from:
 
 This means you never hard-code secrets.  In Docker we pass env vars via
 docker-compose.yml (which reads from .env on the host).
+
+NOTE ON PACKAGE LAYOUT:
+  This file was originally backend/config.py.  When the Task 6 architectural
+  cleanup created backend/config/prompts.py, Python's package resolution rules
+  caused the config/ directory to shadow the config.py module — so
+  `from .config import Settings` silently hit this (then-empty) __init__.py
+  instead of the real Settings class.  Moving Settings here fixes the conflict:
+  the package now exports both Settings (from this file) and prompts (sub-module).
 ─────────────────────────────────────────────────────────────────────────────
 """
 

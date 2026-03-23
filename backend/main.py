@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -25,7 +26,7 @@ from fastapi.responses import JSONResponse
 
 import google.generativeai as genai        # Gemini SDK — configured at startup
 
-from .config import Settings, get_settings  # typed settings — see config.py
+from .config import Settings, get_settings  # typed settings — see config/__init__.py
 from .routers import evaluate               # Task 5: ATS edit scorer endpoint
 from .routers import interview               # Task 3: AI interview SSE endpoint
 from .routers import job                    # Task 7: Job description scraper endpoint
@@ -129,6 +130,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
         expose_headers=["X-Request-ID"],
     )
+
+    # ── Global exception handler ─────────────────────────────────────────────
+    # Catches any unhandled exception that escapes a router.
+    # Logs the FULL traceback so the exact failing line is visible in Docker logs.
+    # Without this, FastAPI swallows the traceback and only logs a generic 500.
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        tb = traceback.format_exc()
+        logger.error(
+            "Unhandled exception on %s %s\n%s",
+            request.method,
+            request.url.path,
+            tb,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Internal server error",
+                "path": request.url.path,
+            },
+        )
 
     # ── Request timing middleware ─────────────────────────────────────────────
     # Middleware is a function that wraps every request/response.

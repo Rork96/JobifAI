@@ -39,6 +39,12 @@ export interface StandardA4LayoutProps {
   onMagic:       (fieldPath: string, text: string, section: string) => Promise<void>;
   onGhostClick:  (keyword: string) => void;
   onPaywall:     () => void;
+  /**
+   * SCRATCH mode only — called when the user clicks an empty Ghost Section
+   * placeholder.  Receives the human-readable section name so the caller
+   * can dispatch "Help me write my [section]" to the chat panel.
+   */
+  onScratchSectionClick?: (sectionName: string) => void;
 }
 
 // ── PaperSectionHead ──────────────────────────────────────────────────────────
@@ -65,6 +71,59 @@ const GhostWord: React.FC<{ keyword: string; onClick: (k: string) => void }> = (
   >
     {keyword}
   </motion.span>
+);
+
+// ── GhostSection ──────────────────────────────────────────────────────────────
+/**
+ * SCRATCH mode placeholder for an empty resume section.
+ *
+ * Visual contract:
+ *   • Dashed border (2px, brand-300) — signals "editable, not real content"
+ *   • Slightly transparent text — looks like watermark placeholder copy
+ *   • Sparkles icon + prompt line — invites action
+ *   • onClick → fires "Help me write my [section]" prompt into Mac's chat
+ *
+ * WHY a separate component?
+ *   Each section (Summary, Experience, Skills, Education) has different
+ *   placeholder text but identical interaction behaviour.  Extracting the
+ *   component removes 4× duplicated motion-button boilerplate.
+ */
+const GhostSection: React.FC<{
+  sectionLabel: string;
+  placeholder:  string;
+  onClick:      () => void;
+}> = ({ sectionLabel, placeholder, onClick }) => (
+  <motion.button
+    type="button"
+    className="w-full text-left mt-5 first:mt-0"
+    onClick={onClick}
+    whileHover={{ scale: 1.005 }}
+    whileTap={{ scale: 0.997 }}
+    initial={{ opacity: 0, y: 6 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+  >
+    {/* Section heading row — matches PaperSectionHead styling */}
+    <div className="flex items-center gap-2 mb-2">
+      <span className="text-[16px] font-bold uppercase tracking-[0.04em] text-gray-300 whitespace-nowrap leading-none">
+        {sectionLabel}
+      </span>
+      <div className="flex-1 h-[0.75px] bg-gray-100" />
+    </div>
+
+    {/* Ghost body */}
+    <div className="border-2 border-dashed border-brand-200 rounded-lg px-4 py-3 flex items-start gap-3 bg-brand-50/30 group hover:bg-brand-50/60 hover:border-brand-400 transition-colors">
+      <Sparkles className="w-3.5 h-3.5 text-brand-300 group-hover:text-brand-500 flex-shrink-0 mt-0.5 transition-colors" />
+      <div>
+        <p className="text-[13px] text-gray-300 group-hover:text-gray-400 italic leading-snug transition-colors">
+          {placeholder}
+        </p>
+        <p className="text-[11px] text-brand-400 group-hover:text-brand-600 font-medium mt-1 transition-colors">
+          Click to have Mac write this with you →
+        </p>
+      </div>
+    </div>
+  </motion.button>
 );
 
 // ── EditableBullet ────────────────────────────────────────────────────────────
@@ -353,7 +412,11 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
   onMagic,
   onGhostClick,
   onPaywall,
+  onScratchSectionClick,
 }) => {
+  const appMode     = useAppStore((s) => s.appMode);
+  const isScratch   = appMode === 'SCRATCH';
+
   const experiences = resumeData.experiences ?? [];
   const education   = resumeData.education   ?? [];
   const skills      = resumeData.skills      ?? [];
@@ -392,11 +455,22 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
 
         {/* ── HEADER ────────────────────────────────────────────────────────── */}
         <div className="mb-4">
-          {resumeData.targetTitle && (
+          {resumeData.targetTitle ? (
             <h1 className="text-[24px] font-bold text-black leading-tight tracking-tight">
               {resumeData.targetTitle}
             </h1>
-          )}
+          ) : isScratch ? (
+            // SCRATCH mode — ghost title; clicking asks Mac for the job title
+            <motion.button
+              type="button"
+              className="text-[24px] font-bold text-gray-200 italic leading-tight tracking-tight hover:text-brand-300 transition-colors cursor-pointer text-left"
+              onClick={() => onScratchSectionClick?.('Target Job Title')}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+            >
+              [ Target Job Title ]
+            </motion.button>
+          ) : null}
           {userEmail && (
             <p className="text-[13px] text-gray-500 mt-0.5">{userEmail}</p>
           )}
@@ -404,7 +478,7 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
         </div>
 
         {/* ── PROFESSIONAL SUMMARY ──────────────────────────────────────────── */}
-        {resumeData.summary && (
+        {resumeData.summary ? (
           <div
             className="relative"
             onMouseEnter={() => setSummaryHovered(true)}
@@ -438,10 +512,16 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
               )}
             </AnimatePresence>
           </div>
-        )}
+        ) : isScratch && onScratchSectionClick ? (
+          <GhostSection
+            sectionLabel="Professional Summary"
+            placeholder="[ Your 2–3 sentence professional summary will appear here ]"
+            onClick={() => onScratchSectionClick('Professional Summary')}
+          />
+        ) : null}
 
         {/* ── WORK EXPERIENCE ───────────────────────────────────────────────── */}
-        {experiences.length > 0 && (
+        {experiences.length > 0 ? (
           <div>
             <PaperSectionHead label="Work Experience" />
             <div className="space-y-5">
@@ -469,10 +549,16 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
               </div>
             )}
           </div>
-        )}
+        ) : isScratch && onScratchSectionClick ? (
+          <GhostSection
+            sectionLabel="Work Experience"
+            placeholder="[ Your work history will appear here — company, title, bullets & metrics ]"
+            onClick={() => onScratchSectionClick('Work Experience')}
+          />
+        ) : null}
 
         {/* ── EDUCATION ─────────────────────────────────────────────────────── */}
-        {education.length > 0 && (
+        {education.length > 0 ? (
           <div>
             <PaperSectionHead label="Education" />
             <div className="space-y-3">
@@ -509,10 +595,16 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
               ))}
             </div>
           </div>
-        )}
+        ) : isScratch && onScratchSectionClick ? (
+          <GhostSection
+            sectionLabel="Education"
+            placeholder="[ Your degree, institution & graduation year will appear here ]"
+            onClick={() => onScratchSectionClick('Education')}
+          />
+        ) : null}
 
         {/* ── SKILLS ────────────────────────────────────────────────────────── */}
-        {(skills.length > 0 || ghostKeywords.length > 0) && (
+        {(skills.length > 0 || ghostKeywords.length > 0) ? (
           <div>
             <PaperSectionHead label="Skills" />
             <p className="text-[13px] text-[#111111] leading-[1.5]">
@@ -526,7 +618,13 @@ export const StandardA4Layout: React.FC<StandardA4LayoutProps> = ({
               ))}
             </p>
           </div>
-        )}
+        ) : isScratch && onScratchSectionClick ? (
+          <GhostSection
+            sectionLabel="Skills"
+            placeholder="[ Technical skills, tools, languages & certifications will appear here ]"
+            onClick={() => onScratchSectionClick('Skills')}
+          />
+        ) : null}
 
         {/* ── FOOTER ────────────────────────────────────────────────────────── */}
         <div className="mt-12 pt-4 border-t border-dashed border-gray-200">

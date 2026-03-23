@@ -35,7 +35,7 @@
 import { useEffect }                   from 'react';
 import { supabase, type Profile }       from '@/lib/supabase';
 import { useAppStore }                  from '@/store/useAppStore';
-import type { ResumeData, ChatMessage } from '@/types';
+import type { ResumeData, ChatMessage, ATSAnalysisResponse } from '@/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS (module-level — not recreated on each render)
@@ -47,8 +47,12 @@ import type { ResumeData, ChatMessage } from '@/types';
  * GUARD: skips if resumeData is already populated (in-session navigation,
  *        hot-reload, TOKEN_REFRESHED on an active session).
  *
- * ATOMIC: resumeData + currentAtsScore + messages land in ONE setState so no
- *         component sees partial state.
+ * ATOMIC: resumeData + analysisResult + currentAtsScore + messages + appStatus
+ *         all land in ONE setState so no component sees partial state.
+ *
+ * WELCOME-BACK MESSAGE: if this is a cold restore (messages were empty) and
+ *   the resume has a targetTitle, Mac greets the user with a personalised
+ *   "Welcome back!" opener referencing the role and current score.
  *
  * @param accessToken  Supabase JWT — forwarded in the Authorization header.
  * @param force        Pass true to bypass the "store populated" guard
@@ -69,7 +73,7 @@ async function loadSavedProgress(accessToken: string, force = false): Promise<vo
     const res = await fetch('/api/user/load-progress', {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization:  `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
     });
@@ -82,17 +86,19 @@ async function loadSavedProgress(accessToken: string, force = false): Promise<vo
     }
 
     const payload: {
-      found:       boolean;
-      resume_data: Partial<ResumeData>;
-      ats_score:   number | null;
-      messages:    Array<{ role: string; content: string }>;
+      found:           boolean;
+      resume_data:     Partial<ResumeData>;
+      analysis_result: Record<string, unknown> | null;
+      ats_score:       number | null;
+      messages:        Array<{ role: string; content: string }>;
     } = await res.json();
 
     console.log('[useAuth] loadSavedProgress — payload received:', {
-      found:       payload.found,
-      score:       payload.ats_score,
-      msgCount:    payload.messages?.length ?? 0,
-      resumeKeys:  Object.keys(payload.resume_data ?? {}).length,
+      found:          payload.found,
+      score:          payload.ats_score,
+      hasAnalysis:    payload.analysis_result !== null,
+      msgCount:       payload.messages?.length ?? 0,
+      resumeKeys:     Object.keys(payload.resume_data ?? {}).length,
     });
 
     if (!payload.found || Object.keys(payload.resume_data ?? {}).length === 0) {
@@ -100,7 +106,7 @@ async function loadSavedProgress(accessToken: string, force = false): Promise<vo
       return;
     }
 
-    // Build full ChatMessage objects with stable IDs and ordered timestamps.
+    // ── Build restored messages with stable IDs ──────────────────────────────
     const now = Date.now();
     const restoredMessages: ChatMessage[] = (payload.messages ?? []).map((m, i) => ({
       id:        `restored_${now}_${i}`,
@@ -109,19 +115,56 @@ async function loadSavedProgress(accessToken: string, force = false): Promise<vo
       timestamp: now - (payload.messages.length - 1 - i) * 100,
     }));
 
-    // ── Single atomic write ─────────────────────────────────────────────────
+    // ── Welcome-back message ─────────────────────────────────────────────────
+    // Injected ONLY on a cold restore (prior messages were empty) so returning
+    // users immediately know Mac remembers their session.
+    // Uses the targetTitle from the saved resume if available.
+    const targetTitle = (payload.resume_data as any)?.targetTitle as string | undefined;
+    const atsScore    = payload.ats_score ?? 0;
+
+    const welcomeMessages: ChatMessage[] = [];
+
+    if (restoredMessages.length === 0 && targetTitle) {
+      welcomeMessages.push({
+        id:        `wb_${now}`,
+        role:      'assistant',
+        content:   `Welcome back! 👋 We were working on your **${targetTitle}** resume — `
+                 + `your current ATS score is **${atsScore}%**. `
+                 + `Ready to pick up where we left off?`,
+        timestamp: now,
+      });
+    } else if (restoredMessages.length === 0) {
+      // Session has data but no title yet — generic welcome
+      welcomeMessages.push({
+        id:        `wb_${now}`,
+        role:      'assistant',
+        content:   `Welcome back! 👋 I've loaded your previous session. `
+                 + `Your resume is at **${atsScore}%** — let's keep improving it!`,
+        timestamp: now,
+      });
+    }
+
+    // ── Single atomic write ──────────────────────────────────────────────────
     // All fields in ONE setState — no component ever sees resumeData without
-    // the score, or the score without messages.
+    // the analysis, or the score without the messages.
     useAppStore.setState({
       resumeData:      payload.resume_data as Partial<ResumeData>,
-      currentAtsScore: payload.ats_score ?? 0,
+      analysisResult:  payload.analysis_result as ATSAnalysisResponse | null,
+      currentAtsScore: atsScore,
       realAtsScore:    payload.ats_score ?? null,
-      messages:        restoredMessages,
+      messages:        [...welcomeMessages, ...restoredMessages],
+      // Restore the user to the OPTIMIZE coaching workspace
+      appMode:         'OPTIMIZE',
+      appStatus:       'COACHING',
     });
 
     console.warn(
-      `[useAuth] ✅ Session RESTORED — score: ${payload.ats_score} | msgs: ${restoredMessages.length} | resumeKeys: ${Object.keys(payload.resume_data).join(', ')}`,
+      `[useAuth] ✅ Session RESTORED — score: ${atsScore} | `
+      + `msgs: ${restoredMessages.length} | `
+      + `hasAnalysis: ${payload.analysis_result !== null} | `
+      + `resumeKeys: ${Object.keys(payload.resume_data).join(', ')}`,
     );
+
   } catch (err) {
     console.error('[useAuth] loadSavedProgress — fetch threw:', err);
   }

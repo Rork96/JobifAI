@@ -191,6 +191,43 @@ class InterviewRequest(BaseModel):
                     "the initial analysis turn.",
     )
 
+    # ── Unified App State Contract ─────────────────────────────────────────────
+    # These three fields form the data contract described in the task spec.
+    # Every request to /api/chat MUST include them so the backend can:
+    #   • Select the correct PersonaFactory strategy (mode)
+    #   • Log lifecycle transitions (status)
+    #   • Apply the correct persona tier (score)
+
+    mode: str = Field(
+        default="OPTIMIZE",
+        description=(
+            "AppMode — 'OPTIMIZE' (coaching existing resume) or "
+            "'SCRATCH' (building from zero via interview). "
+            "Determines which PersonaFactory strategy is used."
+        ),
+    )
+
+    status: str = Field(
+        default="COACHING",
+        description=(
+            "AppStatus — 'IDLE' | 'ANALYZING' | 'COACHING' | 'BUILDING'. "
+            "Logged for lifecycle tracking; future middleware can gate "
+            "requests by status (e.g. reject ANALYZING calls to /chat)."
+        ),
+    )
+
+    # ── Current ATS score ─────────────────────────────────────────────────────────
+    # Passed from the frontend so the backend can select the right Mac persona.
+    # score < 30  → Emergency Triage mode (brief, fill empty sections first)
+    # score > 90  → Triumph mode (celebrate, suggest Elite Bonus Skills)
+    # None / 30–90 → Standard coaching (no persona override)
+    current_score: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Optional: current ATS score (0–100). Drives Mac's persona tier.",
+    )
+
     # ── Optimization Mode ────────────────────────────────────────────────────────
     ghost_keyword: str | None = Field(
         default=None,
@@ -324,21 +361,54 @@ async def interview_turn(
         )
 
     if body.ghost_keyword:
-        # Extract a short role hint from whichever JD field is available
-        jd_preview = (body.job_description or body.job_context or "").strip()[:400]
-        role_hint = f"\nRole context from JD: {jd_preview}" if jd_preview else ""
+        # Pull the richest available JD text (prefer the dedicated context field
+        # which carries the full document; job_description may be truncated).
+        jd_full    = (body.job_context or body.job_description or "").strip()
+        # First 600 chars captures the title, company intro, and top requirements —
+        # enough for Mac to extract a company name and 2-3 role-specific details.
+        jd_excerpt = jd_full[:600]
+
+        jd_block = (
+            f"\nTarget JD excerpt (extract company name, role title, and specific "
+            f"requirements from this to personalise EVERY sentence):\n"
+            f"─────────────────────────────────────────\n"
+            f"{jd_excerpt}\n"
+            f"─────────────────────────────────────────"
+        ) if jd_excerpt else ""
+
         context_parts.append(
-            f"[Ghost Keyword Coaching — FOLLOW THE ▸ optimize STEP RULES]\n"
+            f"[Ghost Keyword Coaching — FOLLOW THE ▸ optimize STEP RULES EXACTLY]\n"
             f"Keyword to integrate: '{body.ghost_keyword}'\n"
-            f"This keyword was flagged as MISSING from the user's resume "
-            f"but IS required by the target job description.{role_hint}\n\n"
-            f"Your task this turn (Steps A→B of the coaching flow):\n"
-            f"  A. Acknowledge '{body.ghost_keyword}' warmly — 1 sentence, reference the role.\n"
-            f"  B. Ask EXACTLY ONE specific, open-ended question to extract a real example.\n"
-            f"     Make it role-specific (e.g. for customer support: "
-            f"'Walk me through the toughest tech issue you resolved for a customer.').\n"
-            f"  DO NOT draft a bullet yet — wait for the user's answer first.\n"
-            f"  If they seem lost, use the bridge message from the ▸ optimize rules."
+            f"Status: MISSING from the user's resume but explicitly required by the JD.{jd_block}\n\n"
+            f"YOUR TASK THIS TURN — STEPS A then B, nothing else:\n\n"
+            f"  STEP A — Acknowledge (exactly 1 sentence).\n"
+            f"    • Name the COMPANY from the JD (e.g. 'IntouchCX', 'Shopify').\n"
+            f"    • State WHY '{body.ghost_keyword}' is critical for THIS specific role.\n"
+            f"    • Mirror the JD's own language — not generic resume-speak.\n"
+            f"    ✓ 'IntouchCX requires strong Communication skills across their customer\n"
+            f"       success teams — adding this to your profile will unlock that match.'\n"
+            f"    ✓ 'Shopify's posting calls out Python for workflow automation — let's\n"
+            f"       get that into your experience section right now.'\n"
+            f"    ✗ 'Let's add {body.ghost_keyword} to your resume.'  ← too generic.\n\n"
+            f"  STEP B — Ask EXACTLY ONE open-ended question.\n"
+            f"    • The question MUST use terminology and context drawn from the JD.\n"
+            f"    • It should feel like it was written specifically for THIS company/role.\n"
+            f"    • Aim to surface a concrete professional example + a metric.\n"
+            f"    Reference patterns (adapt to the actual JD content above):\n"
+            f"      - JD mentions 'Customer Success / CX': 'Tell me about a time you\n"
+            f"        turned around a difficult customer situation — what did you do and\n"
+            f"        what was the outcome?'\n"
+            f"      - JD mentions automation/scripting: 'Walk me through a manual process\n"
+            f"        you automated — what was the before/after in time or cost saved?'\n"
+            f"      - JD mentions team leadership: 'What's the largest cross-functional\n"
+            f"        initiative you led? How many stakeholders and what was the result?'\n"
+            f"      - JD mentions data/reporting: 'Describe a report or dashboard you\n"
+            f"        built that changed a business decision — what was the impact?'\n\n"
+            f"  RULES (non-negotiable):\n"
+            f"    • DO NOT draft a bullet yet — wait for the user's answer.\n"
+            f"    • ONE question only — never stack multiple questions in one turn.\n"
+            f"    • Every word must feel tailored to this company and role.\n"
+            f"    • If the user seems stuck, use the bridge message from ▸ optimize rules."
         )
 
     if context_parts:
@@ -346,8 +416,11 @@ async def interview_turn(
         user_message = f"{system_note}\n\nUser message: {user_message}"
 
     logger.info(
-        "Interview turn — step=%s lang=%s→%s history_len=%d byok=%s jd=%s",
+        "Interview turn — mode=%s status=%s step=%s score=%s lang=%s→%s history_len=%d byok=%s jd=%s",
+        body.mode,
+        body.status,
         body.current_step,
+        body.current_score,
         body.user_lang,
         body.resume_lang,
         len(history),
@@ -373,6 +446,8 @@ async def interview_turn(
                 resume_lang=body.resume_lang,
                 history=history,
                 job_description=body.job_description,
+                score=body.current_score,
+                mode=body.mode,
             ):
                 yield sse_event
         except Exception:  # noqa: BLE001

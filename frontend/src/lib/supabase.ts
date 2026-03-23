@@ -85,3 +85,26 @@ export interface ResumeRow {
   created_at:        string;
   updated_at:        string;
 }
+
+/**
+ * The shape of a row from the `public.user_data` table.
+ *
+ * One row per user — `id` IS the auth.users UUID (no separate user_id column).
+ * Created by: supabase/migrations/20240322000000_user_data.sql
+ *
+ * Columns:
+ *   id               — auth.users.id (PK, FK with ON DELETE CASCADE)
+ *   resume_data      — Zustand ResumeData (targetTitle, experiences, skills…)
+ *   analysis_result  — Full ATSAnalysisResponse from /api/analyze
+ *   chat_history     — [{role, content}] message array
+ *   is_premium       — denormalised from profiles.is_premium
+ *   updated_at       — auto-bumped by DB trigger on every UPDATE
+ */
+export interface UserData {
+  id:              string;
+  resume_data:     Record<string, unknown>;
+  analysis_result: Record<string, unknown> | null;
+  chat_history:    Array<{ role: string; content: string }>;
+  is_premium:      boolean;
+  updated_at:      string;
+}

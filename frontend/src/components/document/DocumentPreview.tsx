@@ -45,6 +45,7 @@ import {
 } from 'lucide-react';
 import { useAppStore, selectIsInterviewComplete, type DiffProposal } from '@/store/useAppStore';
 import { BYOK_STORAGE_KEY } from '@/components/paywall/BYOKModal';
+import { PremiumWrapper } from '@/components/paywall/PremiumWrapper';
 import { initAudioContext, playCheckSound, playAcceptSound } from '@/utils/audio';
 import type { ResumeData } from '@/types';
 import { StandardA4Layout } from './StandardA4Layout';
@@ -203,6 +204,23 @@ function dispatchGhostKeywordPrompt(keyword: string): void {
   );
 }
 
+/**
+ * SCRATCH mode — dispatches a pre-formed "Help me write my [section]" prompt
+ * into the chat panel when the user clicks a Ghost Section placeholder.
+ *
+ * Reuses the `jobifai:ghostKeyword` event channel (no `keyword` field) so
+ * ChatPanel auto-submits the message to Mac without extra wiring.
+ */
+function dispatchGhostSectionPrompt(sectionName: string): void {
+  window.dispatchEvent(
+    new CustomEvent('jobifai:ghostKeyword', {
+      detail: {
+        message: `Help me write my ${sectionName}.`,
+      },
+    }),
+  );
+}
+
 // ── Ghost Skill Chip ──────────────────────────────────────────────────────────
 /**
  * Renders a missing ATS keyword as a dashed "ghost" placeholder injected inline
@@ -261,7 +279,11 @@ const SkillGapChecklist: React.FC<{
   foundKeywords?:   string[];   // green ✅ chips  — analysisResult.foundKeywords
   missingKeywords?: string[];   // red ❌ chips    — analysisResult.missingKeywords
                                 // (empty array [] triggers the Triumph state)
-}> = ({ gaps, missingSkills, matchedSkills, resumeData, foundKeywords, missingKeywords }) => {
+  /** True when the user has an active premium subscription. */
+  isUnlocked?:      boolean;
+  /** Callback to trigger the paywall overlay when a locked chip is clicked. */
+  onPaywallClick?:  () => void;
+}> = ({ gaps, missingSkills, matchedSkills, resumeData, foundKeywords, missingKeywords, isUnlocked = false, onPaywallClick }) => {
   const [isOpen, setIsOpen] = useState(true);
   const prevSatisfied = useRef<Set<string>>(new Set());
 
@@ -390,30 +412,24 @@ const SkillGapChecklist: React.FC<{
                 </motion.div>
               )}
 
-              {/* ── Missing / pending gaps — clickable chips ───────────────── */}
-              {/* Only rendered when there ARE gaps (triumph state hides this) */}
+              {/* ── Missing / pending gaps — delegated to PremiumWrapper ─────── */}
+              {/*
+                All blur/carousel/CTA logic lives in PremiumWrapper.
+                SkillGapChecklist's only job here is: compute `pendingGaps`
+                and pass them through with the correct callbacks.
+                PremiumWrapper handles FREE_TIER_LIMIT, blur, CTA, and gradient.
+              */}
               {!isTriumph && pendingGaps.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {pendingGaps.map((gap) => (
-                    <motion.button
-                      key={gap}
-                      onClick={() => {
-                        initAudioContext();
-                        dispatchInsertSkill(gap);
-                      }}
-                      className="flex items-center gap-1.5 text-[11px] font-medium text-orange-700 bg-orange-50 border border-orange-300 hover:bg-orange-100 hover:border-orange-400 rounded-full px-2.5 py-1 transition-colors cursor-pointer"
-                      whileHover={{ scale: 1.04 }}
-                      whileTap={{ scale: 0.96 }}
-                      title={`Click to insert "${gap}" into chat`}
-                    >
-                      <span className="w-3 h-3 rounded border border-orange-400 flex-shrink-0" />
-                      {gap}
-                      <span className="text-orange-500 font-semibold">
-                        +{impactMap.get(gap.toLowerCase()) ?? getGapValue(gap)}%
-                      </span>
-                    </motion.button>
-                  ))}
-                </div>
+                <PremiumWrapper
+                  keywords={pendingGaps}
+                  impactMap={impactMap}
+                  isUnlocked={isUnlocked ?? false}
+                  onKeywordClick={(gap) => {
+                    initAudioContext();
+                    dispatchInsertSkill(gap);
+                  }}
+                  onPaywallClick={() => onPaywallClick?.()}
+                />
               )}
 
               {/* ── Resolved gaps — checked off ────────────────────────────── */}
@@ -598,6 +614,7 @@ export const DocumentPreview: React.FC = () => {
   const skillGaps          = useAppStore((s) => s.skillGaps);
   const matchedSkills      = useAppStore((s) => s.matchedSkills);
   const missingSkills      = useAppStore((s) => s.missingSkills);
+  const appMode            = useAppStore((s) => s.appMode);
   // Iron Logic (Task 19) — single source of truth when analysis has run
   const analysisResult     = useAppStore((s) => s.analysisResult);
   const pendingDiff        = useAppStore((s) => s.pendingDiff);
@@ -651,6 +668,12 @@ export const DocumentPreview: React.FC = () => {
   const isUnlocked = isPremium || hasByokKey;
   const userEmail  = useAppStore((s) => s.user?.email);
 
+  // ── Carousel paywall overlay trigger ─────────────────────────────────────
+  // True when a blurred keyword chip is clicked.  Renders the same paywall
+  // overlay as the `isComplete && !isUnlocked` gate but with a dismiss button
+  // so the user can go back to coaching visible keywords.
+  const [showPaywallOverlay, setShowPaywallOverlay] = useState(false);
+
   // ── PDF Generation ───────────────────────────────────────────────────────
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError,        setPdfError]        = useState('');
@@ -697,10 +720,55 @@ export const DocumentPreview: React.FC = () => {
   const hasContent = Object.values(resumeData).some((v) =>
     v !== undefined && v !== '' && (Array.isArray(v) ? v.length > 0 : true),
   );
-  // Show the interactive layout when resumeData has content OR when analysis
-  // has run (analysisResult is non-null) — this fixes the 100% score case where
-  // resumeData may be partially populated but still has a full analysis result.
-  const showLayout = hasContent || analysisResult !== null;
+  // Show the interactive layout when:
+  //   • resumeData has any content, OR
+  //   • an analysis result exists (100% score / Iron Logic path), OR
+  //   • we're in SCRATCH mode — Ghost Sections must always be visible
+  //     so the user can click them to trigger Mac coaching, even when
+  //     the resume is completely blank at session start.
+  const showLayout = hasContent || analysisResult !== null || appMode === 'SCRATCH';
+
+  // ── Progressive scoring + Grand Transition trigger (SCRATCH mode) ───────────
+  //
+  // PHASE 1 — Progressive scoring (score 0 → 100 as sections fill in):
+  //   Each filled section awards points so the score ring animates upward
+  //   while Mac interviews the user.  Weights: Title +10, Summary +20,
+  //   Experience +35, Skills +20, Education +15 = 100 when fully built.
+  //
+  // PHASE 2 — Grand Transition (score === 100):
+  //   When all five sections are populated, completeScratchMode() fires:
+  //     • Injects "Foundation built! 🧱" Mac message
+  //     • Switches appMode → 'OPTIMIZE' + appStatus → 'ANALYZING'
+  //     • POSTs /api/analyze to get the real ATS score
+  //     • On response: overwrites the fake 100 with the real score and
+  //       transitions appStatus → 'COACHING' (Ghost Gaps + carousel appear)
+  //
+  // GUARDS:
+  //   • Skips entirely outside SCRATCH mode.
+  //   • Skips if a real analysisResult already exists (prevents overwriting
+  //     a completed Grand Transition on a re-render).
+  //   • completeScratchMode() is self-guarding: it checks appMode === 'SCRATCH'
+  //     && appStatus === 'BUILDING' before doing anything — the immediate
+  //     transitionTo('ANALYZING') inside it prevents any double-fire.
+  useEffect(() => {
+    if (appMode !== 'SCRATCH') return;
+    // Real analysis already ran (post-transition) — don't touch the score.
+    if (analysisResult !== null) return;
+
+    let score = 0;
+    if (resumeData.targetTitle?.trim())             score += 10;
+    if (resumeData.summary?.trim())                 score += 20;
+    if ((resumeData.experiences?.length ?? 0) >= 1) score += 35;
+    if ((resumeData.skills?.length     ?? 0) >= 1)  score += 20;
+    if ((resumeData.education?.length  ?? 0) >= 1)  score += 15;
+
+    useAppStore.getState().setCurrentAtsScore(score);
+
+    // Grand Transition: all five sections complete → launch real ATS analysis
+    if (score === 100) {
+      void useAppStore.getState().completeScratchMode();
+    }
+  }, [appMode, analysisResult, resumeData]);
 
   // ── Highlight-flash tracking ───────────────────────────────────────────────
   const seenIdsRef  = useRef<Set<string>>(new Set());
@@ -821,6 +889,8 @@ export const DocumentPreview: React.FC = () => {
             // Iron Logic overrides — undefined when no analysisResult yet
             foundKeywords={analysisResult?.foundKeywords}
             missingKeywords={analysisResult?.missingKeywords}
+            isUnlocked={isUnlocked}
+            onPaywallClick={() => setShowPaywallOverlay(true)}
           />
         )}
       </AnimatePresence>
@@ -887,14 +957,17 @@ export const DocumentPreview: React.FC = () => {
               onMagic={handleMagic}
               onGhostClick={dispatchGhostKeywordPrompt}
               onPaywall={() => setPremiumToast('Magic Rewrite requires Premium — unlock to use it.')}
+              onScratchSectionClick={dispatchGhostSectionPrompt}
             />
           </div>
         )}
       </div>
 
       {/* ── PAYWALL OVERLAY ────────────────────────────────────────────────── */}
+      {/* Shown when: interview complete (scratch mode) OR user clicked a
+          blurred keyword chip in the carousel (optimization mode).          */}
       <AnimatePresence>
-        {isComplete && !isUnlocked && (
+        {((isComplete && !isUnlocked) || (showPaywallOverlay && !isUnlocked)) && (
           <motion.div
             key="paywall"
             className="absolute inset-0 flex items-center justify-center z-20"
@@ -927,6 +1000,16 @@ export const DocumentPreview: React.FC = () => {
                 </button>
                 {' '}for unlimited exports
               </p>
+              {/* Dismiss button — only shown when opened from carousel, not from
+                  interview-complete gate (which has no way to dismiss). */}
+              {showPaywallOverlay && !isComplete && (
+                <button
+                  onClick={() => setShowPaywallOverlay(false)}
+                  className="mt-3 text-xs text-slate-600 hover:text-slate-400 transition-colors"
+                >
+                  Maybe later
+                </button>
+              )}
             </motion.div>
           </motion.div>
         )}

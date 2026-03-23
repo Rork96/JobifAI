@@ -11,6 +11,56 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+// ── App Mode & Status ─────────────────────────────────────────────────────────
+
+/**
+ * The two top-level operating modes of the application.
+ *
+ *   OPTIMIZE — User already has a resume and wants to improve their ATS score.
+ *              Mac acts as a Career Coach, not an interviewer.
+ *              Reached via the "Upload Resume" onboarding path.
+ *
+ *   SCRATCH  — User is building a resume from zero via voice interview.
+ *              Mac acts as an interviewer, stepping through the state machine.
+ *              Reached via the "Build From Scratch" onboarding path.
+ *
+ * Why a dedicated type rather than using `onboardingMode`?
+ *   `onboardingMode` is 'upload' | 'scratch' | null — null means "not started".
+ *   `AppMode` is OPTIMIZE | SCRATCH with no null state; it is only set once
+ *   the user has committed to a path and we enter the workspace.
+ *   Keeping them separate avoids null-checks deep in components and makes the
+ *   backend contract unambiguous.
+ */
+export type AppMode = 'OPTIMIZE' | 'SCRATCH';
+
+/**
+ * The four lifecycle statuses the application can be in at any moment.
+ *
+ *   IDLE      — Default resting state.  No AI calls in-flight.
+ *               DocumentPreview shows placeholder; Mac waits for input.
+ *
+ *   ANALYZING — POST /api/analyze is in-flight.
+ *               OnboardingFlow shows a spinner; the workspace is not yet mounted.
+ *
+ *   COACHING  — The user is in the OPTIMIZE workspace.
+ *               Mac asks coaching questions; ghost keywords are visible.
+ *               ATS score ring shows live score.
+ *
+ *   BUILDING  — The user is in the SCRATCH interview.
+ *               Mac steps through the interview state machine.
+ *               DocumentPreview builds live as data is extracted.
+ *
+ * State machine diagram (simplified):
+ *   IDLE ──► ANALYZING ──► COACHING  (upload path)
+ *   IDLE ──► BUILDING              (scratch path)
+ *   COACHING ──► IDLE              (user resets)
+ *   BUILDING ──► IDLE              (user resets)
+ *
+ * The `transitionTo(newStatus)` store action handles all cleanup side-effects
+ * (clearing messages, resetting score, etc.) so components stay clean.
+ */
+export type AppStatus = 'IDLE' | 'ANALYZING' | 'COACHING' | 'BUILDING';
+
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -272,4 +322,4 @@ export interface ATSAnalysisResponse {
  *   shocked — ATS score < 50; red crimson shake + 😱 emoji (score reveal drama)
  *   success — ATS score > 80; gold/green celebration + ✨ emoji
  */
-export type MascotState = 'idle' | 'listening' | 'processing' | 'talking' | 'warning' | 'shocked' | 'success';
+export type MascotState = 'idle' | 'listening' | 'processing' | 'talking' | 'warning' | 'shocked' | 'success' | 'triumph';

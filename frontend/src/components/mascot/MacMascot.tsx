@@ -61,6 +61,7 @@ const STATE_VIDEOS: Record<MascotState, string> = {
   warning:    '/mascot/warning.webm',
   shocked:    '/mascot/shocked.webm',
   success:    '/mascot/success.webm',
+  triumph:    '/mascot/success.webm',     // fallback — reuses success clip
 };
 
 /**
@@ -74,6 +75,7 @@ const STATE_GLOW_CLASSES: Record<MascotState, string> = {
   warning:    'bg-amber-400',
   shocked:    'bg-red-500',
   success:    'bg-emerald-400',
+  triumph:    'bg-amber-400',   // gold/amber glow for 100% celebration
 };
 
 // ── Spring presets (stiffness/damping pairs) ──────────────────────────────────
@@ -148,6 +150,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     shocked:    { y: [0, 8, -4, 0],        scale: [1, 0.92, 1.04, 1] },
     // Success: joyful big bounce upward
     success:    { y: [0, -14, 0, -8, 0],   scale: [1, 1.08, 1, 1.05, 1] },
+    // Triumph: full-on celebration — big multi-bounce with scale swell
+    triumph:    { y: [0, -18, 2, -12, 0, -7, 0], scale: [1, 1.12, 0.96, 1.10, 1, 1.06, 1] },
   };
 
   const bodyTransition = {
@@ -176,6 +180,11 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
       y:     { repeat: Infinity, duration: 1.2, ease: 'easeInOut' },
       scale: { repeat: Infinity, duration: 1.2, ease: 'easeInOut' },
     },
+    triumph: {
+      // Grand celebration — slow, sweeping bounce
+      y:     { repeat: Infinity, duration: 1.6, ease: 'easeInOut' },
+      scale: { repeat: Infinity, duration: 1.6, ease: 'easeInOut' },
+    },
   };
 
   // ── Glow animation ────────────────────────────────────────────────────────
@@ -191,6 +200,8 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     shocked:    { scale: [1, 1.5, 1],  opacity: [0.35, 0.65, 0.35] },
     // Success: gentle expanding halo — warmth and celebration
     success:    { scale: [1, 1.4, 1],  opacity: [0.30, 0.55, 0.30] },
+    // Triumph: large pulsing gold halo — maximum celebration energy
+    triumph:    { scale: [1, 1.6, 1, 1.45, 1],  opacity: [0.40, 0.70, 0.35, 0.65, 0.40] },
   };
 
   const glowTransition = {
@@ -201,6 +212,7 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
     warning:    {},
     shocked:    { repeat: Infinity, duration: 1.0, ease: 'easeInOut' },
     success:    { repeat: Infinity, duration: 1.6, ease: 'easeInOut' },
+    triumph:    { repeat: Infinity, duration: 2.0, ease: 'easeInOut' },
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -255,6 +267,43 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
               }}
             />
           ))}
+        </AnimatePresence>
+
+        {/* ── LAYER 2c: TRIUMPH — Gold star particles ──────────────────── */}
+        {/*
+          Six gold/amber star emojis orbit outward and fade — conveys a
+          100% score "fireworks" moment without a heavy animation library.
+        */}
+        <AnimatePresence>
+          {state === 'triumph' && (
+            <>
+              {[0, 1, 2, 3, 4, 5].map((i) => {
+                const angle  = (i / 6) * 360;
+                const rad    = (angle * Math.PI) / 180;
+                const tx     = Math.cos(rad) * 52;
+                const ty     = Math.sin(rad) * 52;
+                const emojis = ['⭐', '✨', '🌟', '✨', '⭐', '🌟'];
+                return (
+                  <motion.span
+                    key={`star-${i}`}
+                    className="absolute text-[11px] pointer-events-none select-none"
+                    style={{ top: '50%', left: '50%', transform: 'translate(-50%,-50%)' }}
+                    initial={{ x: 0, y: 0, opacity: 0, scale: 0.4 }}
+                    animate={{ x: tx, y: ty, opacity: [0, 1, 1, 0], scale: [0.4, 1.2, 1, 0.6] }}
+                    exit={{ opacity: 0, scale: 0 }}
+                    transition={{
+                      repeat:   Infinity,
+                      duration: 2.0,
+                      delay:    i * 0.22,
+                      ease:     'easeOut',
+                    }}
+                  >
+                    {emojis[i]}
+                  </motion.span>
+                );
+              })}
+            </>
+          )}
         </AnimatePresence>
 
         {/* ── LAYER 2b: PROCESSING — Spin ring ────────────────────────── */}
@@ -432,6 +481,7 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
             state === 'talking'    ? 'bg-emerald-400' :
             state === 'shocked'    ? 'bg-red-400' :
             state === 'success'    ? 'bg-emerald-300' :
+            state === 'triumph'    ? 'bg-amber-400' :
                                      'bg-green-400',
           ].join(' ')}
           // Blink rate speeds up when active
@@ -455,6 +505,7 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
                 state === 'warning'    ? 'text-amber-600' :
                 state === 'shocked'    ? 'text-red-500' :
                 state === 'success'    ? 'text-emerald-500' :
+                state === 'triumph'    ? 'text-amber-500' :
                                          'text-gray-400',
               ].join(' ')}
               initial={{ opacity: 0, x: -4 }}
@@ -468,6 +519,7 @@ export const MacMascot: React.FC<MacMascotProps> = ({ currentStep, state, onClic
               {state === 'warning'    && 'HR check'}
               {state === 'shocked'    && 'Yikes…'}
               {state === 'success'    && 'Looking great!'}
+              {state === 'triumph'    && 'Celebrating! 🏆'}
             </motion.span>
           )}
         </AnimatePresence>

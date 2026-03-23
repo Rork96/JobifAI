@@ -36,7 +36,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, LogOut, Mail, Settings, X, Zap } from 'lucide-react';
+import { Cloud, CloudOff, LogOut, Mail, Settings, Trash2, X, Zap } from 'lucide-react';
 import { ChatPanel }        from '@/components/chat/ChatPanel';
 import { DocumentPreview }  from '@/components/document/DocumentPreview';
 import { BottomSheet }      from '@/components/ui/BottomSheet';
@@ -107,6 +107,12 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
   const setResumeLang     = useAppStore((s) => s.setResumeLang);
   const messages          = useAppStore((s) => s.messages);
   const resetInterview    = useAppStore((s) => s.resetInterview);
+  const isSaving          = useAppStore((s) => s.isSaving);
+  const lastSyncedAt      = useAppStore((s) => s.lastSyncedAt);
+  const syncError         = useAppStore((s) => s.syncError);
+  const setSyncError      = useAppStore((s) => s.setSyncError);
+  const syncToSupabase    = useAppStore((s) => s.syncToSupabase);
+  const clearCloudData    = useAppStore((s) => s.clearCloudData);
 
   const handleLogoClick = () => {
     if (messages.length > 0) {
@@ -120,11 +126,32 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
   const [showAuthModal,     setShowAuthModal]     = useState(false);
   const [showUserMenu,      setShowUserMenu]       = useState(false);
   const [showSettingsModal, setShowSettingsModal]  = useState(false);
+  const [showClearConfirm,  setShowClearConfirm]   = useState(false);
+  const [isClearingData,    setIsClearingData]     = useState(false);
   const [emailInput,        setEmailInput]         = useState('');
   const [linkSent,          setLinkSent]           = useState(false);
   const [authError,         setAuthError]          = useState('');
   const [isSending,         setIsSending]          = useState(false);
+  // "Saved to cloud" flash — appears briefly after each successful sync
+  const [showSavedToast,    setShowSavedToast]     = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
+
+  // Flash the "Saved to cloud" indicator for 3 s after each successful sync
+  useEffect(() => {
+    if (!lastSyncedAt) return;
+    setShowSavedToast(true);
+    const t = setTimeout(() => setShowSavedToast(false), 3_000);
+    return () => clearTimeout(t);
+  }, [lastSyncedAt]);
+
+  // Helper: format "X min ago" from a unix timestamp
+  const formatSyncAge = (ts: number): string => {
+    const diffMs = Date.now() - ts;
+    const diffMin = Math.floor(diffMs / 60_000);
+    if (diffMin < 1)  return 'just now';
+    if (diffMin === 1) return '1 min ago';
+    return `${diffMin} min ago`;
+  };
 
   // Auto-focus email input when modal opens
   useEffect(() => {
@@ -181,6 +208,64 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
           {isInterviewActive && <StepProgressBar />}
         </AnimatePresence>
 
+        {/* ── Cloud sync status pill ───────────────────────────────────── */}
+        {/*
+          Visible only when the user is signed in AND has data.
+          Shows "Saving…" while the request is in-flight, then "Saved"
+          for 3 seconds after a successful sync.
+          IMPORTANT: completely independent from isAnalyzing / isGeneratingPdf —
+          a background save must NEVER hide the resume preview or coaching UI.
+        */}
+        <AnimatePresence>
+          {user && (isSaving || showSavedToast) && !syncError && (
+            <motion.div
+              key={isSaving ? 'saving' : 'saved'}
+              initial={{ opacity: 0, scale: 0.9, y: -4 }}
+              animate={{ opacity: 1, scale: 1,   y: 0  }}
+              exit={{    opacity: 0, scale: 0.9, y: -4  }}
+              transition={{ type: 'spring', stiffness: 380, damping: 26 }}
+              className={`hidden sm:flex items-center gap-1.5 text-[11px] font-medium rounded-full px-2.5 py-1 ${
+                isSaving
+                  ? 'text-slate-400 bg-slate-100'
+                  : 'text-emerald-700 bg-emerald-50 border border-emerald-200'
+              }`}
+            >
+              <Cloud className={`w-3 h-3 ${isSaving ? 'animate-pulse' : ''}`} />
+              {isSaving ? 'Saving…' : '✓ Saved'}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── Sync error pill ──────────────────────────────────────────── */}
+        {/*
+          Shown only when a background save fails.  Completely decoupled from
+          the resume preview, analysis, and PDF states — dismissable, auto-
+          clears after 6 s (handled by the store), and never blocks the UI.
+        */}
+        <AnimatePresence>
+          {syncError && (
+            <motion.div
+              key="sync-error"
+              initial={{ opacity: 0, scale: 0.9, y: -4 }}
+              animate={{ opacity: 1, scale: 1,   y: 0  }}
+              exit={{    opacity: 0, scale: 0.9, y: -4  }}
+              transition={{ type: 'spring', stiffness: 380, damping: 26 }}
+              className="hidden sm:flex items-center gap-1.5 text-[11px] font-medium rounded-full px-2.5 py-1 text-red-700 bg-red-50 border border-red-200 max-w-[220px]"
+              title={syncError}
+            >
+              <CloudOff className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">Sync failed — will retry</span>
+              <button
+                onClick={() => setSyncError(null)}
+                className="ml-0.5 flex-shrink-0 text-red-400 hover:text-red-600 transition-colors"
+                aria-label="Dismiss sync error"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ── Auth area ────────────────────────────────────────────────── */}
         <div className="relative flex items-center gap-2">
           {user ? (
@@ -225,16 +310,30 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                       )}
                     </div>
 
-                    {/* My Resumes — coming soon */}
+                    {/* Cloud Sync — shows last-saved time + force-sync on click */}
                     <button
-                      disabled
-                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-400 cursor-not-allowed"
-                      title="Coming soon"
+                      onClick={() => {
+                        // Cancel the debounce window and save immediately
+                        syncToSupabase();
+                        setShowUserMenu(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-50 transition-colors"
+                      title={lastSyncedAt ? `Last saved ${formatSyncAge(lastSyncedAt)}` : 'Save session to cloud'}
                     >
-                      <FileText className="w-4 h-4 text-gray-300" />
-                      My Resumes
-                      <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-gray-400 bg-gray-100 rounded-full px-1.5 py-0.5">
-                        Soon
+                      {isSaving
+                        ? <Cloud className="w-4 h-4 text-brand-400 animate-pulse" />
+                        : lastSyncedAt
+                          ? <Cloud className="w-4 h-4 text-emerald-500" />
+                          : <CloudOff className="w-4 h-4 text-gray-400" />
+                      }
+                      Cloud Sync
+                      <span className="ml-auto text-[10px] text-gray-400 font-normal">
+                        {isSaving
+                          ? 'Saving…'
+                          : lastSyncedAt
+                            ? formatSyncAge(lastSyncedAt)
+                            : 'Not saved'
+                        }
                       </span>
                     </button>
 
@@ -381,6 +480,70 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                 >
                   Save & Close
                 </button>
+
+                {/* ── Danger Zone ─────────────────────────────────────────────
+                    Only shown when a user is signed in (cloud data exists).
+                    Two-step confirm prevents accidental wipes.
+                ─────────────────────────────────────────────────────────── */}
+                {user && (
+                  <div className="border-t border-slate-700/50 pt-4 flex flex-col gap-3">
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+                      Danger Zone
+                    </p>
+
+                    <AnimatePresence mode="wait">
+                      {!showClearConfirm ? (
+                        /* Step 1: show the "Clear All Data" button */
+                        <motion.button
+                          key="clear-btn"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{    opacity: 0 }}
+                          onClick={() => setShowClearConfirm(true)}
+                          className="w-full flex items-center justify-center gap-2 text-sm text-red-400 hover:text-red-300 border border-red-900/40 hover:border-red-700/60 rounded-xl py-2.5 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Clear All Data
+                        </motion.button>
+                      ) : (
+                        /* Step 2: confirmation prompt */
+                        <motion.div
+                          key="clear-confirm"
+                          initial={{ opacity: 0, y: 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{    opacity: 0, y: 4 }}
+                          className="flex flex-col gap-2"
+                        >
+                          <p className="text-xs text-red-400 text-center leading-relaxed">
+                            This deletes your resume from the cloud and resets your session.
+                            <br />This cannot be undone.
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setShowClearConfirm(false)}
+                              className="flex-1 text-sm text-slate-400 hover:text-slate-200 border border-slate-700 rounded-xl py-2 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              disabled={isClearingData}
+                              onClick={async () => {
+                                setIsClearingData(true);
+                                await clearCloudData();
+                                setIsClearingData(false);
+                                setShowClearConfirm(false);
+                                setShowSettingsModal(false);
+                              }}
+                              className="flex-1 text-sm font-semibold text-white bg-red-600 hover:bg-red-500 disabled:bg-red-900 disabled:text-red-500 rounded-xl py-2 transition-colors"
+                            >
+                              {isClearingData ? 'Clearing…' : 'Yes, delete it'}
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
               </div>
             </motion.div>
           </motion.div>

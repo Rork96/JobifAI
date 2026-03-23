@@ -163,6 +163,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   const setSkillGaps          = useAppStore((s) => s.setSkillGaps);
   const setMatchedSkills      = useAppStore((s) => s.setMatchedSkills);
   const setMissingSkills      = useAppStore((s) => s.setMissingSkills);
+  const transitionTo          = useAppStore((s) => s.transitionTo);
   const onboardingMode        = useAppStore((s) => s.onboardingMode);
   const storeResumeText       = useAppStore((s) => s.uploadedResumeText);
   const storeJobDescription   = useAppStore((s) => s.jobDescription);
@@ -352,11 +353,15 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
       }
     }
 
-    // ── Step 5: enter the paywall ─────────────────────────────────────────────
-    // Called after both the JD fetch AND any evaluation have settled.
+    // ── Step 5: activate BUILDING workspace + enter paywall ──────────────────
+    // transitionTo('BUILDING') sets appStatus: 'BUILDING' so MainLayout renders
+    // the SCRATCH workspace (Ghost Sections, step-based Mac coaching) instead
+    // of the OPTIMIZE workspace.  Must be called BEFORE onComplete() so the
+    // workspace is fully configured when the PaywallModal overlay unmounts.
+    transitionTo('BUILDING');
     setShowScratchSubForm(false);
     onComplete();
-  }, [scratchJobInput, setJobDescription, onComplete]);
+  }, [scratchJobInput, setJobDescription, transitionTo, onComplete]);
 
   // ── Upload resume via backend API ──────────────────────────────────────────
   /**

@@ -80,6 +80,31 @@ interface InterviewRequestBody {
    * targeted follow-up question (tailored to the JD) before drafting a bullet.
    */
   ghost_keyword?:       string;
+  /**
+   * Optional: current ATS score (0–100).
+   * Used by the backend to select the Mac persona tier:
+   *   < 30  → Emergency Triage (brief, fill empty sections first)
+   *   > 90  → Triumph (celebrate, suggest Elite Bonus Skills)
+   *   30–90 → Standard coaching (no override)
+   */
+  current_score?:       number;
+
+  /**
+   * REQUIRED by the unified data contract (Task: Global State Machine).
+   * AppMode — 'OPTIMIZE' | 'SCRATCH'.
+   * Tells PersonaFactory which system instruction strategy to use:
+   *   OPTIMIZE → coaching/keyword flow (_STEPS_OPTIMIZE)
+   *   SCRATCH  → full interview state machine (_STEPS_SCRATCH)
+   */
+  mode:                 string;
+
+  /**
+   * REQUIRED by the unified data contract.
+   * AppStatus — 'IDLE' | 'ANALYZING' | 'COACHING' | 'BUILDING'.
+   * Logged by the backend for lifecycle tracking.  Future middleware
+   * will gate certain statuses (e.g. reject chat during ANALYZING).
+   */
+  status:               string;
 }
 
 /** Parsed payload of a `data_extract` SSE event (mirrors ai_service.py output). */
@@ -289,6 +314,10 @@ export const ChatPanel: React.FC = () => {
   const updateResumeData = useAppStore((s) => s.updateResumeData);
   const skillGaps        = useAppStore((s) => s.skillGaps);
   const bumpAtsScore     = useAppStore((s) => s.bumpAtsScore);
+  const currentAtsScore  = useAppStore((s) => s.currentAtsScore);
+  // Unified app state — included in every API request per data contract.
+  const appMode          = useAppStore((s) => s.appMode);
+  const appStatus        = useAppStore((s) => s.appStatus);
 
   // ── Speech Recognition ───────────────────────────────────────────────────────
   const {
@@ -640,8 +669,10 @@ export const ChatPanel: React.FC = () => {
     if (isListening)                            return 'listening';
     if (isGenerating && streamingContent === '') return 'processing';
     if (streamingContent)                       return 'talking';
+    // Triumph: 100% ATS score while idle — gold celebration glow
+    if (currentAtsScore >= 100)                 return 'triumph';
     return 'idle';
-  }, [isWarning, isListening, isGenerating, streamingContent]);
+  }, [isWarning, isListening, isGenerating, streamingContent, currentAtsScore]);
 
   // ── Send handler (SSE streaming) ──────────────────────────────────────────
   const handleSend = async () => {
@@ -734,6 +765,16 @@ export const ChatPanel: React.FC = () => {
       // Pass the ghost keyword when it was triggered by a ghost-gap click.
       // The backend injects a targeted coaching context for this turn only.
       ...(ghostKeyword ? { ghost_keyword: ghostKeyword } : {}),
+      // Pass the current ATS score so the backend can apply the right persona
+      // tier: Emergency (<30), Standard (30–90), or Triumph (>90).
+      ...(currentAtsScore > 0 ? { current_score: currentAtsScore } : {}),
+      // ── Unified data contract ─────────────────────────────────────────────
+      // mode and status are REQUIRED in every /api/chat request.
+      // They tell PersonaFactory which strategy to use and let the backend
+      // log lifecycle transitions.  Default to safe values when the store
+      // hasn't been initialised yet (first-render edge case).
+      mode:   appMode   ?? 'OPTIMIZE',
+      status: appStatus ?? 'COACHING',
     };
 
     try {

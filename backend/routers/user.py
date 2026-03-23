@@ -1,47 +1,32 @@
 """
 backend/routers/user.py — User Progress Persistence
 ─────────────────────────────────────────────────────────────────────────────
-POST /api/user/save-progress
+Three endpoints wired to the `public.user_data` table (one row per user):
 
-Called by the frontend's debounced auto-save hook every 2 seconds after any
-change to `resumeData` or `messages`.  Upserts a single "current draft" row
-per user — not a versioned history — so the table never grows unbounded.
+  POST   /api/user/save-progress  — debounced auto-save from the frontend
+  GET    /api/user/load-progress  — hydrate the store on page refresh / login
+  DELETE /api/user/clear-data     — wipe the cloud row + reset the session
 
-DATABASE SCHEMA (run this migration in Supabase SQL editor before deploying):
+TABLE SCHEMA (run supabase/migrations/20240322000000_user_data.sql first):
 ─────────────────────────────────────────────────────────────────────────────
-
-  -- Add chat_history_json column if it doesn't already exist
-  ALTER TABLE public.resumes
-    ADD COLUMN IF NOT EXISTS chat_history_json  jsonb  DEFAULT '[]'::jsonb;
-
-  -- Unique constraint so upsert can resolve conflicts on user_id
-  -- (one "current draft" row per user — not one per resume)
-  -- Only add this if you want single-row-per-user semantics.
-  -- Comment it out if users should be able to save multiple named resumes.
-  CREATE UNIQUE INDEX IF NOT EXISTS resumes_user_id_draft_idx
-    ON public.resumes (user_id)
-    WHERE (job_title = '__autosave__');
-
-─────────────────────────────────────────────────────────────────────────────
+  CREATE TABLE public.user_data (
+    id               uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    resume_data      jsonb NOT NULL DEFAULT '{}'::jsonb,
+    analysis_result  jsonb DEFAULT NULL,
+    chat_history     jsonb NOT NULL DEFAULT '[]'::jsonb,
+    is_premium       boolean NOT NULL DEFAULT false,
+    updated_at       timestamptz NOT NULL DEFAULT now()
+  );
 
 UPSERT STRATEGY:
-  We use Supabase's `.upsert()` with `on_conflict='user_id'` targeting the
-  `__autosave__` sentinel row (job_title = '__autosave__').  This:
-    • Creates the row on first save (INSERT path)
-    • Updates it on every subsequent save (UPDATE path)
-    • Never duplicates rows for the same user
-
-  Named saves (user clicks "Save as…") continue to use POST /api/resumes
-  which always INSERTs a new row with a real job_title.
+  `id` IS the user's UUID (auth.users.id). One row per user — no sentinel
+  `job_title = '__autosave__'` needed. The upsert targets `id` directly.
 
 OWNERSHIP:
-  The `user_id` written to the row is ALWAYS taken from the validated JWT,
-  never from the request body.  The upsert filter includes `.eq("user_id",
-  user_id)` so a user can never overwrite another user's autosave row even
-  if they somehow constructed a forged payload.
+  `id` written to the row is ALWAYS taken from the validated JWT, never from
+  the request body. A forged payload cannot touch another user's row.
 
 AUTHENTICATION:
-  Reuses the same `get_authenticated_user_id` dependency from resumes.py.
   Expects:  Authorization: Bearer <supabase_access_token>
 ─────────────────────────────────────────────────────────────────────────────
 """
@@ -49,9 +34,10 @@ AUTHENTICATION:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
@@ -64,12 +50,8 @@ router = APIRouter(
     tags=["user"],
 )
 
-# Sentinel value used as job_title for the auto-save row.
-# Keeps it distinguishable from user-created named saves.
-_AUTOSAVE_TITLE = "__autosave__"
 
-
-# ─── Auth dependency (mirrors resumes.py) ─────────────────────────────────────
+# ─── Auth dependency ───────────────────────────────────────────────────────────
 
 async def get_authenticated_user_id(
     authorization: str | None = Header(default=None),
@@ -115,75 +97,65 @@ class SaveProgressRequest(BaseModel):
     """
     Payload for POST /api/user/save-progress.
 
-    resume_data:  The full Zustand ResumeData object serialised as a dict.
-                  Stored in the `content_json` column.
-    ats_score:    The current ATS score (0–100).  None if analysis hasn't run.
-                  Stored in `current_ats_score`.
-    messages:     The full chat history array (list of {role, content} dicts).
-                  Stored in the `chat_history_json` column.
+    All fields have safe defaults so a partial save never 422s.
+    The frontend sends the full Zustand snapshot on every debounced fire.
     """
-    resume_data: dict           = Field(default_factory=dict, description="Zustand resumeData")
-    ats_score:   int | None     = Field(default=None, ge=0, le=100, description="Current ATS score")
-    messages:    list[dict[str, Any]] = Field(default_factory=list, description="Chat message history")
+    resume_data:     dict                 = Field(
+        default_factory=dict,
+        description="Full Zustand ResumeData object (targetTitle, experiences, skills…)",
+    )
+    analysis_result: dict | None         = Field(
+        default=None,
+        description="ATSAnalysisResponse from /api/analyze — score, keywords, macMessage",
+    )
+    ats_score:       int | None          = Field(
+        default=None, ge=0, le=100,
+        description="currentAtsScore — persisted as a top-level column for fast reads",
+    )
+    messages:        list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Chat message history [{role, content}]",
+    )
 
 
 class SaveProgressResponse(BaseModel):
-    """
-    Confirmation payload returned after a successful save.
-
-    saved:  Always true — 4xx/5xx are raised on failure, never false here.
-    id:     UUID of the upserted row (useful for debugging / re-loading).
-    """
-    saved: bool
-    id:    str
+    """Returned after a successful upsert."""
+    saved:      bool
+    id:         str
+    updated_at: str
 
 
 class LoadProgressResponse(BaseModel):
     """
     Payload returned by GET /api/user/load-progress.
 
-    found:        False when no auto-save row exists yet (new user).
-    resume_data:  The Zustand ResumeData dict (stored in content_json).
-    ats_score:    The persisted ATS score (0–100), or None if not yet scored.
-    messages:     The chat history as [{role, content}] dicts.
+    found = False means no row yet (brand-new user).
+    Frontend treats this as a clean slate, NOT an error.
     """
-    found:       bool
-    resume_data: dict                   = Field(default_factory=dict)
-    ats_score:   int | None             = None
-    messages:    list[dict[str, Any]]   = Field(default_factory=list)
+    found:           bool
+    resume_data:     dict                   = Field(default_factory=dict)
+    analysis_result: dict | None           = None
+    ats_score:       int | None            = None
+    messages:        list[dict[str, Any]]  = Field(default_factory=list)
 
 
-# ─── Endpoint ──────────────────────────────────────────────────────────────────
+# ─── Save Progress ──────────────────────────────────────────────────────────────
 
 @router.post(
     "/save-progress",
     response_model=SaveProgressResponse,
-    summary="Auto-save resume draft + chat history for the authenticated user",
+    summary="Auto-save full session state for the authenticated user",
     description="""
-Upserts a single "current draft" row in the `public.resumes` table.
+Upserts a single row in `public.user_data` (id = auth JWT user_id).
 
-The `user_id` is taken exclusively from the validated JWT — never from the
-request body — so a user can only write to their own row.
+**Columns written:**
+- `resume_data`     ← Zustand ResumeData object
+- `analysis_result` ← Full ATSAnalysisResponse (score, keywords, macMessage)
+- `chat_history`    ← Full message array
+- `updated_at`      ← Auto-bumped by DB trigger
 
-**Behaviour:**
-- First call → `INSERT` a new row with `job_title = '__autosave__'`
-- Subsequent calls → `UPDATE` the existing row in-place
-- Named saves (`POST /api/resumes`) are unaffected — they always `INSERT`
-
-**Columns updated:**
-- `content_json`       ← `resume_data`
-- `chat_history_json`  ← `messages`
-- `current_ats_score`  ← `ats_score`
-
-**Required DB migration** (run once in Supabase SQL editor):
-```sql
-ALTER TABLE public.resumes
-  ADD COLUMN IF NOT EXISTS chat_history_json jsonb DEFAULT '[]'::jsonb;
-
-CREATE UNIQUE INDEX IF NOT EXISTS resumes_user_id_draft_idx
-  ON public.resumes (user_id)
-  WHERE (job_title = '__autosave__');
-```
+Called by the frontend's 3-second debounced `syncToSupabase()` action
+whenever `resumeData`, `messages`, or `analysisResult` changes.
     """,
 )
 async def save_progress(
@@ -191,63 +163,63 @@ async def save_progress(
     settings: Settings = Depends(get_settings),
     user_id:  str      = Depends(get_authenticated_user_id),
 ) -> SaveProgressResponse:
-    """
-    POST /api/user/save-progress — Debounced auto-save from the frontend.
+    """POST /api/user/save-progress — upsert the user's full session state."""
+    # Always have a fallback timestamp so we return valid JSON even if the DB
+    # trigger doesn't populate updated_at (e.g. empty result.data on 204).
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    Uses Supabase upsert targeting the unique (user_id WHERE job_title = '__autosave__')
-    index.  This guarantees exactly one autosave row per user regardless of how
-    many times this endpoint is called.
-    """
     try:
         from supabase import create_client  # type: ignore[import-untyped]
         client = create_client(settings.supabase_url, settings.supabase_key)
 
-        # ── Build the row ─────────────────────────────────────────────────────
-        # user_id is ALWAYS from the JWT dependency, never the request body.
+        # id = user_id (the auth UUID).  Upsert resolves conflict on `id`.
         row: dict[str, Any] = {
-            "user_id":            user_id,
-            "job_title":          _AUTOSAVE_TITLE,
-            "content_json":       body.resume_data,
-            "chat_history_json":  body.messages,
+            "id":              user_id,
+            "resume_data":     body.resume_data,
+            "analysis_result": body.analysis_result,
+            "chat_history":    body.messages,
         }
-        if body.ats_score is not None:
-            row["current_ats_score"] = body.ats_score
 
-        # ── Upsert ────────────────────────────────────────────────────────────
-        # `on_conflict="user_id"` alone would conflict with ALL rows for that user.
-        # The partial unique index (WHERE job_title = '__autosave__') means only
-        # the autosave sentinel row is targeted — named saves are untouched.
-        #
-        # If the partial index is not yet created (migration not run), this falls
-        # back to a regular INSERT which creates a new row on each call.  The
-        # endpoint still works; it just won't de-duplicate.
-        result = (
-            client.table("resumes")
-            .upsert(row, on_conflict="user_id,job_title")
-            .execute()
-        )
-
-        if not result.data:
-            # Supabase returned an empty response — likely a RLS policy block
-            # or a schema mismatch.  Raise rather than silently failing so the
-            # frontend receives a clear 500 and can show a "Save failed" toast.
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Save failed — no data returned from database.",
+        # ── Supabase upsert ──────────────────────────────────────────────────
+        # Wrapped in its own try/except so we can distinguish a Supabase-level
+        # failure (RLS, schema mismatch, network blip) from a general server
+        # error.  The 400 status code tells the frontend that the payload was
+        # valid but the DB rejected it — actionable for debugging.
+        try:
+            result = (
+                client.table("user_data")
+                .upsert(row, on_conflict="id")
+                .execute()
             )
+        except Exception as sb_exc:
+            # Supabase SDK raises its own exception types (APIError, etc.).
+            # Stringify and surface as 400 so the frontend can log the detail.
+            detail = f"Supabase upsert failed: {type(sb_exc).__name__}: {sb_exc}"
+            logger.error("save-progress Supabase error — user=%s: %s", user_id, detail)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            ) from sb_exc
 
-        saved_row = result.data[0]
-        row_id    = saved_row.get("id", "unknown")
+        # result.data is a list; it may be empty if the DB returned 0 rows
+        # (e.g. a RETURNING clause that matched nothing — shouldn't happen on
+        # upsert but guard anyway rather than throwing a KeyError).
+        updated_at = now_iso
+        if result.data:
+            updated_at = result.data[0].get("updated_at") or now_iso
 
         logger.info(
-            "Progress saved — user=%s  resume_id=%s  msgs=%d  score=%s",
-            user_id, row_id, len(body.messages), body.ats_score,
+            "Progress saved — user=%s  msgs=%d  score=%s  has_analysis=%s",
+            user_id,
+            len(body.messages),
+            body.ats_score,
+            body.analysis_result is not None,
         )
 
-        return SaveProgressResponse(saved=True, id=row_id)
+        return SaveProgressResponse(saved=True, id=user_id, updated_at=updated_at)
 
     except HTTPException:
-        raise  # re-raise our own errors unchanged
+        raise
 
     except Exception as exc:
         logger.exception(
@@ -256,7 +228,7 @@ async def save_progress(
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not save progress. Please try again.",
+            detail=f"Could not save progress ({type(exc).__name__}). Please try again.",
         ) from exc
 
 
@@ -265,107 +237,81 @@ async def save_progress(
 @router.get(
     "/load-progress",
     response_model=LoadProgressResponse,
-    summary="Load the authenticated user's latest auto-saved draft on app boot",
+    summary="Hydrate the frontend store from the last saved session",
     description="""
-Fetches the single `__autosave__` row for the authenticated user.
+Fetches the `user_data` row for the authenticated user.
 
-Called by the frontend's `useAuth` hook immediately after a session is
-confirmed (page refresh / magic-link return).  If the Zustand store is empty
-but the user has a prior session, this restores their resume data, score, and
-chat history so they can continue working without re-entering anything.
+Called by `useAuth.ts` immediately after a Supabase session is confirmed
+(page refresh / magic-link return / Google OAuth).
 
-Returns `found: false` (HTTP 200) when no auto-save row exists yet — this is
-the normal state for a brand-new user and should not be treated as an error.
+Returns `found: false` (HTTP 200) for new users — this is normal and should
+NOT be treated as an error by the frontend.
     """,
 )
 async def load_progress(
     settings: Settings = Depends(get_settings),
     user_id:  str      = Depends(get_authenticated_user_id),
 ) -> LoadProgressResponse:
-    """
-    GET /api/user/load-progress — Restore the latest draft on page refresh.
+    """GET /api/user/load-progress — restore the latest saved session on boot."""
 
-    Always returns HTTP 200.  `found=False` means new user / no draft yet —
-    the frontend should treat this as a clean slate, not an error.
-    """
-    # ── Helpers ───────────────────────────────────────────────────────────────
-    def _safe_dict(value: Any) -> dict:
-        """Return value if it's a non-empty dict, else {}."""
-        return value if isinstance(value, dict) and value else {}
+    def _safe_dict(v: Any) -> dict:
+        return v if isinstance(v, dict) and v else {}
 
-    def _safe_list(value: Any) -> list:
-        """Return value if it's a non-empty list of dicts, else []."""
-        if not isinstance(value, list):
+    def _safe_list(v: Any) -> list:
+        if not isinstance(v, list):
             return []
-        # Filter out any non-dict entries so the frontend never chokes on
-        # corrupted rows (e.g. a column that somehow stored a plain string).
-        return [m for m in value if isinstance(m, dict)]
+        return [m for m in v if isinstance(m, dict)]
 
-    def _safe_score(value: Any) -> int | None:
-        """Return value clamped to 0–100 if numeric, else None."""
-        if isinstance(value, (int, float)) and 0 <= int(value) <= 100:
-            return int(value)
+    def _safe_score(v: Any) -> int | None:
+        if isinstance(v, (int, float)) and 0 <= int(v) <= 100:
+            return int(v)
         return None
 
     try:
         from supabase import create_client  # type: ignore[import-untyped]
         client = create_client(settings.supabase_url, settings.supabase_key)
 
-        logger.debug("load-progress — querying autosave row for user=%s", user_id)
-
         result = (
-            client.table("resumes")
-            .select("id, content_json, chat_history_json, current_ats_score")
-            .eq("user_id", user_id)
-            .eq("job_title", _AUTOSAVE_TITLE)
+            client.table("user_data")
+            .select("id, resume_data, analysis_result, chat_history, updated_at")
+            .eq("id", user_id)
             .limit(1)
             .execute()
         )
 
-        # ── No row yet → new user, return a clean empty structure ─────────────
         if not result.data:
+            logger.info("load-progress — no row for user=%s (new user)", user_id)
+            return LoadProgressResponse(found=False)
+
+        row          = result.data[0]
+        resume_data  = _safe_dict(row.get("resume_data"))
+        analysis     = row.get("analysis_result")          # may be None
+        messages     = _safe_list(row.get("chat_history"))
+
+        # Guard: treat an empty resume_data as "no draft yet"
+        if not resume_data:
             logger.info(
-                "load-progress — no autosave row for user=%s (new user or first session)",
+                "load-progress — empty resume_data for user=%s (treating as new user)",
                 user_id,
             )
             return LoadProgressResponse(found=False)
 
-        row = result.data[0]
-        row_id = row.get("id", "unknown")
-
-        # ── Defensive extraction ───────────────────────────────────────────────
-        # `chat_history_json` requires the ADD COLUMN migration.  If the column
-        # hasn't been created yet, Supabase returns the row without that key.
-        # We handle KeyError / None gracefully rather than blowing up.
-        raw_resume   = row.get("content_json")
-        raw_messages = row.get("chat_history_json")          # None if column missing
-        raw_score    = row.get("current_ats_score")
-
-        resume_data = _safe_dict(raw_resume)
-        messages    = _safe_list(raw_messages)
-        ats_score   = _safe_score(raw_score)
-
-        # ── Guard: if content_json is completely empty treat as no draft ───────
-        if not resume_data:
-            logger.info(
-                "load-progress — row id=%s for user=%s has empty content_json (treating as no draft)",
-                row_id, user_id,
-            )
-            return LoadProgressResponse(found=False)
+        # Extract ATS score from analysis_result if available
+        ats_score = None
+        if isinstance(analysis, dict):
+            ats_score = _safe_score(analysis.get("score"))
 
         logger.info(
-            "load-progress — restored user=%s  row=%s  score=%s  "
-            "resume_keys=%d  msgs=%d  chat_col_present=%s",
-            user_id, row_id, ats_score,
-            len(resume_data), len(messages),
-            raw_messages is not None,
+            "load-progress — restored user=%s  score=%s  resume_keys=%d  msgs=%d",
+            user_id, ats_score, len(resume_data), len(messages),
         )
 
         return LoadProgressResponse(
-            found=       True,
-            resume_data= resume_data,
-            ats_score=   ats_score,
-            messages=    messages,
+            found=           True,
+            resume_data=     resume_data,
+            analysis_result= analysis if isinstance(analysis, dict) else None,
+            ats_score=       ats_score,
+            messages=        messages,
         )
 
     except HTTPException:
@@ -379,4 +325,55 @@ async def load_progress(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not load saved progress. Please try again.",
+        ) from exc
+
+
+# ─── Clear Data ────────────────────────────────────────────────────────────────
+
+@router.delete(
+    "/clear-data",
+    # response_class=Response bypasses FastAPI's Pydantic serialisation pipeline
+    # entirely, which prevents the Starlette startup AssertionError:
+    #   "Status code 204 must not have a response body"
+    # that fires with FastAPI 0.111 + Pydantic v2 when the route's return-type
+    # annotation is left as `-> None` and the framework tries to attach a model.
+    response_class=Response,
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete the user's saved cloud data and reset their session",
+    description="""
+Deletes the `user_data` row for the authenticated user.
+
+Called when the user clicks **Clear All Data** in the Settings panel.
+The frontend resets its local Zustand store to `IDLE` independently —
+this endpoint only handles the server-side deletion.
+
+Returns 204 No Content on success.
+Returns 404 if no row exists (treated as success by the frontend).
+    """,
+)
+async def clear_data(
+    settings: Settings = Depends(get_settings),
+    user_id:  str      = Depends(get_authenticated_user_id),
+) -> Response:
+    """DELETE /api/user/clear-data — wipe the user's persisted session."""
+    try:
+        from supabase import create_client  # type: ignore[import-untyped]
+        client = create_client(settings.supabase_url, settings.supabase_key)
+
+        client.table("user_data").delete().eq("id", user_id).execute()
+
+        logger.info("Cloud data cleared — user=%s", user_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        logger.exception(
+            "clear-data failed — user=%s  err=%s: %s",
+            user_id, type(exc).__name__, exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not clear data. Please try again.",
         ) from exc
