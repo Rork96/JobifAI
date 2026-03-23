@@ -238,6 +238,16 @@ class InterviewRequest(BaseModel):
                     "tailored to the job description before drafting a bullet.",
     )
 
+    # ── Hardcore Mentor Mode ──────────────────────────────────────────────────────
+    # When True, PersonaFactory injects a radical-honesty persona override that
+    # strips all politeness from Mac's responses.  The structural step goals
+    # (Summary, Experience, etc.) are preserved — only the tone changes.
+    is_hardcore_mode: bool = Field(
+        default=False,
+        description="When true, Mac delivers radical honesty with no politeness — "
+                    "strict deconstruction of mistakes and tough, actionable analysis.",
+    )
+
     model_config = {"json_schema_extra": {
         "example": {
             "user_message": "I was a Senior Developer at Shopify from 2021 to 2023.",
@@ -448,6 +458,7 @@ async def interview_turn(
                 job_description=body.job_description,
                 score=body.current_score,
                 mode=body.mode,
+                is_hardcore_mode=body.is_hardcore_mode,
             ):
                 yield sse_event
         except Exception:  # noqa: BLE001

@@ -18,7 +18,7 @@ supabase==2.4.6
 # JWT decoding — used to validate Supabase access tokens locally (HS256).
 # gotrue (a supabase dep) already pulls this in transitively, but we pin it
 # explicitly so the import is guaranteed and the version is reproducible.
-PyJWT==2.8.0
+PyJWT==2.12.1
 
 # Data validation & serialisation — FastAPI depends on this under the hood
 pydantic==2.7.1

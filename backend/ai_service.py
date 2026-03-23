@@ -143,6 +143,7 @@ def build_system_prompt(
     job_description: str | None = None,
     score: int | None = None,
     mode: str = "OPTIMIZE",
+    is_hardcore_mode: bool = False,
 ) -> str:
     """
     Build the system instruction by delegating to PersonaFactory.
@@ -171,6 +172,7 @@ def build_system_prompt(
         user_lang_name   = user_lang_name,
         resume_lang_name = resume_lang_name,
         jd_text          = job_description,
+        is_hardcore_mode = is_hardcore_mode,
     )
 
 
@@ -184,6 +186,7 @@ def _build_gemini_model(
     job_description: str | None = None,
     score: int | None = None,
     mode: str = "OPTIMIZE",
+    is_hardcore_mode: bool = False,
 ) -> genai.GenerativeModel:
     """
     Build a configured GenerativeModel instance.
@@ -203,7 +206,7 @@ def _build_gemini_model(
 
     return genai.GenerativeModel(
         model_name=DEFAULT_MODEL,
-        system_instruction=build_system_prompt(user_lang, resume_lang, current_step, job_description, score, mode),
+        system_instruction=build_system_prompt(user_lang, resume_lang, current_step, job_description, score, mode, is_hardcore_mode),
         safety_settings={
             # BLOCK_ONLY_HIGH allows almost all professional content through
             # while still blocking genuinely harmful outputs.
@@ -311,6 +314,7 @@ async def stream_interview_turn(
     job_description: str | None = None,
     score: int | None = None,
     mode: str = "OPTIMIZE",
+    is_hardcore_mode: bool = False,
 ) -> AsyncGenerator[str, None]:
     """
     The heart of the AI engine.  Streams a single interview turn.
@@ -345,7 +349,7 @@ async def stream_interview_turn(
         history:      Prior conversation turns (frontend format, excl. current msg).
     """
     # ── 1. Build the model and convert history ─────────────────────────────────
-    model   = _build_gemini_model(api_key, current_step, user_lang, resume_lang, job_description, score, mode)
+    model   = _build_gemini_model(api_key, current_step, user_lang, resume_lang, job_description, score, mode, is_hardcore_mode)
     contents = _convert_history_to_gemini(history) + [
         {"role": "user", "parts": [{"text": user_message}]},
     ]

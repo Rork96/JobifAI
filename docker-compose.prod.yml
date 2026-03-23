@@ -100,7 +100,7 @@ services:
       platforms:
         - linux/arm64    # Raspberry Pi 5 native — no QEMU emulation
     image: jobifai-backend:prod
-    restart: unless-stopped
+    restart: always     # Survive power cuts in Winnipeg — auto-starts with Docker daemon
     networks: [internal]
     # No ports exposed to host — nginx proxies to backend:8000 on the
     # internal network.  The service is unreachable from the internet directly.
@@ -132,7 +132,7 @@ services:
         VITE_SUPABASE_URL:      ${VITE_SUPABASE_URL}
         VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
     image: jobifai-frontend:prod
-    restart: unless-stopped
+    restart: always
     networks: [internal]
     expose:
       - "80"
@@ -141,66 +141,60 @@ services:
         limits:
           memory: 64M    # Nginx serving static files barely uses any RAM
 
-  # ── Nginx: SSL terminator + reverse proxy ────────────────────────────────────
+  # ── Nginx: HTTP reverse proxy ────────────────────────────────────────────────
+  # TLS is terminated by Cloudflare Tunnel at the edge — nginx handles HTTP only.
+  # The cloudflared daemon (running as a systemd service on the Pi host, outside
+  # Docker) connects to http://localhost:80 and forwards traffic from
+  # cv.wealthifai.xyz through the tunnel.
+  #
+  # To switch to self-managed TLS (no CF Tunnel), replace nginx.cloudflare.conf
+  # with nginx.prod.conf, add port 443, and uncomment the certbot service.
   nginx:
     image: nginx:stable-alpine
-    restart: unless-stopped
+    restart: always     # Must come back after power cut before cloudflared reconnects
     depends_on:
       backend:
         condition: service_healthy
       frontend:
         condition: service_started
     ports:
-      - "80:80"      # HTTP (ACME challenge + redirect to HTTPS)
-      - "443:443"    # HTTPS (TLS-terminated here)
+      - "127.0.0.1:80:80"   # Bind to loopback only — cloudflared connects locally.
+                             # Remove 127.0.0.1: if you want LAN access on :80.
     volumes:
-      # Our custom nginx config
-      - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
-      # Let's Encrypt certificates (written by certbot service)
-      - ./nginx/certbot/conf:/etc/letsencrypt:ro
-      # ACME challenge webroot (certbot writes here; nginx serves it on :80)
-      - ./nginx/certbot/www:/var/www/certbot:ro
+      - ./nginx/nginx.cloudflare.conf:/etc/nginx/conf.d/default.conf:ro
     networks: [internal, external]
     deploy:
       resources:
         limits:
           memory: 32M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
     healthcheck:
-      test:     ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      test:     ["CMD", "wget", "-qO-", "http://localhost:80/health"]
       interval: 30s
       timeout:  5s
       retries:  3
 
-  # ── Certbot: automatic TLS certificate renewal ───────────────────────────────
-  certbot:
-    image: certbot/certbot:latest   # Multi-arch: works on ARM64
-    restart: unless-stopped
-    volumes:
-      - ./nginx/certbot/conf:/etc/letsencrypt
-      - ./nginx/certbot/www:/var/www/certbot
-    # Renew every 12 h (Let's Encrypt certs expire every 90 days).
-    # certbot renew is a no-op if the cert is not due for renewal yet.
-    entrypoint: >
-      /bin/sh -c "
-        trap exit TERM;
-        while :; do
-          certbot renew --quiet --webroot --webroot-path=/var/www/certbot;
-          sleep 12h & wait $${!};
-        done
-      "
-    networks: [internal]
-
-  # ── Cloudflare Tunnel (UNCOMMENT if using tunnel instead of nginx SSL) ───────
-  # cloudflared:
-  #   image: cloudflare/cloudflared:latest
-  #   restart: unless-stopped
-  #   command: tunnel --no-autoupdate run
-  #   environment:
-  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}   # from .env
-  #   networks: [internal, external]
-  #   depends_on: [nginx]
-  # NOTE: If using cloudflared, remove ports: from the nginx service above and
-  # point the tunnel to http://nginx:80 (not localhost).
+  # ── Certbot (DISABLED — Cloudflare Tunnel handles TLS) ───────────────────────
+  # Uncomment below if you ever switch away from CF Tunnel to self-managed TLS.
+  # certbot:
+  #   image: certbot/certbot:latest
+  #   restart: always
+  #   volumes:
+  #     - ./nginx/certbot/conf:/etc/letsencrypt
+  #     - ./nginx/certbot/www:/var/www/certbot
+  #   entrypoint: >
+  #     /bin/sh -c "
+  #       trap exit TERM;
+  #       while :; do
+  #         certbot renew --quiet --webroot --webroot-path=/var/www/certbot;
+  #         sleep 12h & wait $${!};
+  #       done
+  #     "
+  #   networks: [internal]
 
 # ── Networks ─────────────────────────────────────────────────────────────────
 networks:

@@ -81,6 +81,11 @@ interface InterviewRequestBody {
    */
   ghost_keyword?:       string;
   /**
+   * Optional: when true, Mac switches to Hardcore Mentor Mode —
+   * radical honesty, no politeness, strict deconstruction only.
+   */
+  is_hardcore_mode?:    boolean;
+  /**
    * Optional: current ATS score (0–100).
    * Used by the backend to select the Mac persona tier:
    *   < 30  → Emergency Triage (brief, fill empty sections first)
@@ -301,6 +306,7 @@ export const ChatPanel: React.FC = () => {
   const isGenerating     = useAppStore((s) => s.isGenerating);
   const userLang         = useAppStore((s) => s.userLang);
   const resumeLang       = useAppStore((s) => s.resumeLang);
+  const isHardcoreMode   = useAppStore((s) => s.isHardcoreMode);
   const resumeData       = useAppStore((s) => s.resumeData);
   // Job description from onboarding — Mac uses this to tailor interview questions.
   const jobDescription        = useAppStore((s) => s.jobDescription);
@@ -768,6 +774,9 @@ export const ChatPanel: React.FC = () => {
       // Pass the current ATS score so the backend can apply the right persona
       // tier: Emergency (<30), Standard (30–90), or Triumph (>90).
       ...(currentAtsScore > 0 ? { current_score: currentAtsScore } : {}),
+      // Hardcore Mentor Mode — always sent so backend can apply/remove the override
+      // consistently without inferring absence as "false".
+      is_hardcore_mode: isHardcoreMode,
       // ── Unified data contract ─────────────────────────────────────────────
       // mode and status are REQUIRED in every /api/chat request.
       // They tell PersonaFactory which strategy to use and let the backend

@@ -321,6 +321,26 @@ it enabled? Specific numbers are what make recruiters stop and read!
 """
 
 
+# ─── Hardcore Mentor Mode Override ────────────────────────────────────────────
+# Injected as a PERSONA OVERRIDE block when is_hardcore_mode=True.
+# Replaces the warm, empathetic Mac header tone but preserves all structural
+# step goals (Summary, Experience, Skills) so the interview still progresses.
+_HARDCORE_OVERRIDE = """\
+════════════════════════════════════════════════════════
+PERSONA OVERRIDE — HARDCORE MENTOR MODE  (user-activated)
+════════════════════════════════════════════════════════
+You are my critical mentor. Only radical honesty. No politeness or softening. \
+Only deconstruction of mistakes and tough analysis. Be direct, harsh, but highly actionable.
+
+Discard all warm, encouraging language from your default persona. \
+You do not say "Great!" or "Well done!" or "That's fantastic." \
+Every response must be blunt, precise, and immediately useful. \
+If the user's answer is weak, name exactly what is weak and why. \
+If a bullet point is vague, rewrite it with a concrete metric and tell them \
+exactly what was wrong with the original. \
+Your value is not comfort — it is brutal clarity.\
+"""
+
 # ─── Assembled System Prompt Template ──────────────────────────────────────────
 # This is the full template string with {format} slots.  It is NOT used directly
 # — PersonaFactory.build() assembles the final string by injecting the correct
@@ -381,6 +401,7 @@ class PersonaFactory:
         user_lang_name:   str,           # human-readable language for conversation
         resume_lang_name: str,           # human-readable language for extracted data
         jd_text:          str | None = None,  # raw job description (first 3 000 chars used)
+        is_hardcore_mode: bool = False,  # when True, inject radical-honesty persona override
     ) -> str:
         """
         Render and return the complete system instruction for this request.
@@ -394,6 +415,8 @@ class PersonaFactory:
             user_lang_name:   Language Mac converses in (e.g. "Canadian English").
             resume_lang_name: Language for extracted data (e.g. "Canadian English").
             jd_text:          Optional raw job description text.
+            is_hardcore_mode: When True, replaces standard Mac warmth with radical-
+                              honesty persona. Step goals are preserved; tone is not.
 
         Returns:
             Fully rendered system prompt string, ready for Gemini.
@@ -401,7 +424,13 @@ class PersonaFactory:
         steps_section = (
             _STEPS_OPTIMIZE if mode == "OPTIMIZE" else _STEPS_SCRATCH
         )
-        persona_section = PersonaFactory._persona_tier(score)
+        # Hardcore override takes precedence over score-based persona tiers —
+        # the user explicitly asked for it, so we honour that choice.
+        persona_section = (
+            _HARDCORE_OVERRIDE
+            if is_hardcore_mode
+            else PersonaFactory._persona_tier(score)
+        )
         jd_section      = PersonaFactory._jd_section_block(jd_text)
 
         return _PROMPT_TEMPLATE.format(
