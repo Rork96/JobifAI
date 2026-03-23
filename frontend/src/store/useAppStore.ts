@@ -188,8 +188,16 @@ interface LangSlice {
    */
   resumeLang: LanguageCode;
 
-  setUserLang:   (lang: LanguageCode) => void;
-  setResumeLang: (lang: LanguageCode) => void;
+  /**
+   * HARDCORE_MODE — When true, Mac drops all politeness and delivers
+   * radical, deconstructive criticism of the user's resume.
+   * Persisted to localStorage so the preference survives page refreshes.
+   */
+  isHardcoreMode: boolean;
+
+  setUserLang:        (lang: LanguageCode) => void;
+  setResumeLang:      (lang: LanguageCode) => void;
+  toggleHardcoreMode: () => void;
 }
 
 // ── Onboarding Slice ──────────────────────────────────────────────────────────
@@ -577,7 +585,8 @@ const PROMO_CODES = new Set(['START2026']);
 // Key used to persist the promo unlock across page refreshes.
 // Stored in localStorage — safe to change if we ever want to invalidate old
 // persisted sessions (e.g. when a code expires: change the key name).
-const PROMO_STORAGE_KEY = 'jobifai_promo_v1';
+const PROMO_STORAGE_KEY    = 'jobifai_promo_v1';
+const HARDCORE_STORAGE_KEY = 'jobifai_hardcore_v1';
 
 /**
  * Read the persisted promo unlock from localStorage.
@@ -614,6 +623,8 @@ const createAuthSlice: StateCreator<AppStore, [], [], AuthSlice> = (set, get) =>
     _syncTimer = setTimeout(async () => {
       _syncTimer = null;
 
+      console.log('[Store] syncToSupabase — debounce fired, checking session…');
+
       // Bail out if the user is not signed in — no token, no sync.
       // supabase.auth.getSession() can itself throw a JSON parse error when
       // the Supabase server returns an empty / malformed response (network
@@ -623,18 +634,26 @@ const createAuthSlice: StateCreator<AppStore, [], [], AuthSlice> = (set, get) =>
       try {
         const { data: { session } } = await supabase.auth.getSession();
         sessionToken = session?.access_token;
+        console.log('[Store] syncToSupabase — session:', sessionToken ? `token(${sessionToken.length} chars)` : 'NO SESSION');
       } catch (sessionErr) {
         console.warn('[Store] getSession() threw — skipping sync:', sessionErr);
         return;
       }
-      if (!sessionToken) return;
+      if (!sessionToken) {
+        console.warn('[Store] syncToSupabase — BAIL: no session token. User must be signed in for cloud sync.');
+        return;
+      }
 
       const s = useAppStore.getState();
 
       // Skip if there is nothing meaningful to persist
       const hasResume   = Object.keys(s.resumeData).length > 0;
       const hasMessages = s.messages.length > 0;
-      if (!hasResume && !hasMessages) return;
+      console.log('[Store] syncToSupabase — hasResume:', hasResume, '| hasMessages:', hasMessages);
+      if (!hasResume && !hasMessages) {
+        console.warn('[Store] syncToSupabase — BAIL: nothing to save yet (empty resume + no messages).');
+        return;
+      }
 
       set({ isSaving: true, syncError: null });
 
@@ -794,12 +813,23 @@ const createLangSlice: StateCreator<AppStore, [], [], LangSlice> = (set) => {
     return 'en';
   };
 
+  const readHardcoreMode = (): boolean => {
+    try { return localStorage.getItem(HARDCORE_STORAGE_KEY) === 'true'; } catch { return false; }
+  };
+
   return {
-    userLang:   detectUserLang(),
-    resumeLang: 'en-CA',  // Default: Canadian English (our primary market)
+    userLang:       detectUserLang(),
+    resumeLang:     'en-CA',  // Default: Canadian English (our primary market)
+    isHardcoreMode: readHardcoreMode(),
 
     setUserLang:   (userLang)   => set({ userLang }),
     setResumeLang: (resumeLang) => set({ resumeLang }),
+    toggleHardcoreMode: () =>
+      set((state) => {
+        const next = !state.isHardcoreMode;
+        try { localStorage.setItem(HARDCORE_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+        return { isHardcoreMode: next };
+      }),
   };
 };
 

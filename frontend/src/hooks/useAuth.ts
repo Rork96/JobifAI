@@ -388,8 +388,26 @@ export function useAuth() {
   };
 
   const signOut = async (): Promise<void> => {
-    await supabase.auth.signOut();
-    // clearAuth() is called by the SIGNED_OUT handler above
+    // Best-effort network sign-out — MUST clear local state regardless of outcome.
+    // If signOut() throws (network down, Supabase unreachable), we still clear
+    // the local session so the UI is never permanently locked.
+    try {
+      await supabase.auth.signOut();
+      // clearAuth() is called by the SIGNED_OUT handler above on success
+    } catch (err) {
+      console.warn('[useAuth] signOut() threw (offline?) — forcing local clear:', err);
+    } finally {
+      // Force-clear regardless — the SIGNED_OUT event may not fire offline.
+      // Wipe the Supabase session from localStorage so a refresh stays signed out.
+      try {
+        Object.keys(localStorage)
+          .filter((k) => k.startsWith('sb-'))
+          .forEach((k) => localStorage.removeItem(k));
+      } catch { /* localStorage unavailable in some privacy modes */ }
+      // Always invoke clearAuth so the store + UI reflect the signed-out state.
+      useAppStore.getState().clearAuth();
+      console.log('[useAuth] signOut — local state cleared (emergency path)');
+    }
   };
 
   return { signInWithEmail, signInWithGoogle, signOut };

@@ -101,10 +101,12 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
   const user              = useAppStore((s) => s.user);
   const isPremium         = useAppStore((s) => s.isPremium);
   const isInterviewActive = useAppStore(selectIsInterviewActive);
-  const userLang          = useAppStore((s) => s.userLang);
-  const resumeLang        = useAppStore((s) => s.resumeLang);
-  const setUserLang       = useAppStore((s) => s.setUserLang);
-  const setResumeLang     = useAppStore((s) => s.setResumeLang);
+  const userLang            = useAppStore((s) => s.userLang);
+  const resumeLang          = useAppStore((s) => s.resumeLang);
+  const isHardcoreMode      = useAppStore((s) => s.isHardcoreMode);
+  const setUserLang         = useAppStore((s) => s.setUserLang);
+  const setResumeLang       = useAppStore((s) => s.setResumeLang);
+  const toggleHardcoreMode  = useAppStore((s) => s.toggleHardcoreMode);
   const messages          = useAppStore((s) => s.messages);
   const resetInterview    = useAppStore((s) => s.resetInterview);
   const isSaving          = useAppStore((s) => s.isSaving);
@@ -318,13 +320,13 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                         setShowUserMenu(false);
                       }}
                       className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-50 transition-colors"
-                      title={lastSyncedAt ? `Last saved ${formatSyncAge(lastSyncedAt)}` : 'Save session to cloud'}
+                      title={lastSyncedAt ? `Last saved ${formatSyncAge(lastSyncedAt)}` : 'Click to save session to cloud'}
                     >
                       {isSaving
                         ? <Cloud className="w-4 h-4 text-brand-400 animate-pulse" />
                         : lastSyncedAt
                           ? <Cloud className="w-4 h-4 text-emerald-500" />
-                          : <CloudOff className="w-4 h-4 text-gray-400" />
+                          : <Cloud className="w-4 h-4 text-gray-400" />
                       }
                       Cloud Sync
                       <span className="ml-auto text-[10px] text-gray-400 font-normal">
@@ -332,7 +334,7 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                           ? 'Saving…'
                           : lastSyncedAt
                             ? formatSyncAge(lastSyncedAt)
-                            : 'Not saved'
+                            : 'Click to sync'
                         }
                       </span>
                     </button>
@@ -472,6 +474,32 @@ const TopBar: React.FC<{ auth: AuthActions; onHome?: () => void }> = ({ auth, on
                     <option value="de">Deutsch</option>
                     <option value="pt">Português</option>
                   </select>
+                </div>
+
+                {/* Hardcore Mentor Mode */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                      Hardcore Mentor Mode 🌶️
+                    </label>
+                    <button
+                      role="switch"
+                      aria-checked={isHardcoreMode}
+                      onClick={toggleHardcoreMode}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                        isHardcoreMode ? 'bg-red-600' : 'bg-slate-600'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          isHardcoreMode ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Warning: Radical honesty. No politeness, just strict deconstruction of your mistakes and tough analysis.
+                  </p>
                 </div>
 
                 <button
