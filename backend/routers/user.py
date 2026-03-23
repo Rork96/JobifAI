@@ -37,6 +37,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+import jwt as pyjwt  # PyJWT — local HS256 decode; avoids network round-trip per request
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
@@ -60,6 +61,18 @@ async def get_authenticated_user_id(
     """
     Validates the Supabase JWT from the Authorization header.
     Returns the authenticated user's UUID string, or raises HTTP 401.
+
+    Two-strategy validation:
+
+    Strategy A — Local HS256 decode (preferred):
+        When SUPABASE_JWT_SECRET is set, we decode the token entirely in-process.
+        Zero network, zero latency, no dependency on Supabase Auth availability.
+        Supabase signs all user access tokens with HS256 using this shared secret.
+
+    Strategy B — Supabase Auth API (fallback):
+        Used when SUPABASE_JWT_SECRET is not configured.
+        Calls POST /auth/v1/user against the Supabase project; slower and requires
+        the Supabase Auth service to be reachable, but requires no additional config.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -68,26 +81,87 @@ async def get_authenticated_user_id(
         )
 
     token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token is empty.",
+        )
 
+    # ── Strategy A: local JWT decode (fast path) ─────────────────────────────
+    if settings.supabase_jwt_secret:
+        try:
+            payload: dict[str, Any] = pyjwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=["HS256"],
+                # Supabase issues access tokens with aud="authenticated".
+                # Passing the audience here causes PyJWT to verify it,
+                # rejecting service-role or anon tokens sent by accident.
+                audience="authenticated",
+            )
+        except pyjwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has expired. Please sign in again.",
+            )
+        except pyjwt.InvalidAudienceError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has unexpected audience (expected 'authenticated').",
+            )
+        except pyjwt.InvalidTokenError as exc:
+            # Covers InvalidSignatureError, DecodeError, etc.
+            logger.warning("JWT local decode failed: %s: %s", type(exc).__name__, exc)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token: {type(exc).__name__}",
+            ) from exc
+
+        user_id: str | None = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token is missing the 'sub' claim.",
+            )
+
+        logger.debug("JWT validated locally — user=%s", user_id)
+        return user_id
+
+    # ── Strategy B: Supabase Auth API (fallback when no JWT secret) ──────────
+    logger.debug(
+        "SUPABASE_JWT_SECRET not set — falling back to Auth API validation "
+        "(set it for faster, network-free token checks)"
+    )
     try:
         from supabase import create_client  # type: ignore[import-untyped]
+
+        # Use the service-role key so the admin client can call auth.get_user().
         client = create_client(settings.supabase_url, settings.supabase_key)
         resp = client.auth.get_user(token)
+
         if not resp or not resp.user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired session token.",
+                detail="Invalid or expired session token (Auth API returned no user).",
             )
+
+        logger.debug("JWT validated via Auth API — user=%s", resp.user.id)
         return resp.user.id
 
     except HTTPException:
         raise
 
     except Exception as exc:
-        logger.warning("JWT validation failed: %s: %s", type(exc).__name__, exc)
+        # Log the real exception type + message so we can diagnose it rather
+        # than seeing only the generic 401 in production logs.
+        logger.warning(
+            "Auth API validation failed — %s: %s",
+            type(exc).__name__,
+            exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials.",
+            detail=f"Could not validate credentials ({type(exc).__name__}).",
         ) from exc
 
 

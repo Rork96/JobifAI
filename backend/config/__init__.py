@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     supabase_url: str = Field(..., description="https://<ref>.supabase.co")
     supabase_key: str = Field(..., description="Supabase service-role secret key")
 
+    # JWT signing secret — used to validate user access tokens locally (HS256),
+    # eliminating the network round-trip to Supabase Auth on every request.
+    # Found in: Supabase Dashboard → Project Settings → API → JWT Settings → JWT Secret
+    # If omitted, auth falls back to the Supabase Auth API (slower, less reliable).
+    supabase_jwt_secret: str = Field(
+        default="",
+        description="Supabase JWT signing secret (for local token validation)",
+    )
+
     # ── Gemini ────────────────────────────────────────────────────────────────
     # Our hosted key for the free tier.  Users can supply their own (BYOK easter
     # egg) — that'll be handled per-request, not here.
