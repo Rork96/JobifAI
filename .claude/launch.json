@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", ".claude/worktrees/sad-brattain/frontend", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd .claude/worktrees/sad-brattain && uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000"],
+      "port": 8000
+    }
+  ]
+}
