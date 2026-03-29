@@ -1,0 +1,13 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install deps from package*.json at build time so the named volume is
+# pre-populated.  The bind-mount will overlay package.json with the host
+# copy, but node_modules stays in the named volume (see docker-compose.dev.yml).
+COPY package*.json ./
+RUN npm install
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev"]
