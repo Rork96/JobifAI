@@ -1,0 +1,39 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# JobifAI — Frontend Dockerfile (development only)
+#
+# This image runs the Vite dev server with HMR inside Docker on macOS.
+# It is NOT used for production. The production build is a static bundle
+# served by Nginx (see docker-compose.prod.yml).
+#
+# Strategy:
+#   1. Install node_modules at image build time (from package.json/lock).
+#   2. At runtime, docker-compose mounts ./frontend:/app — source lives on host.
+#   3. An anonymous volume at /app/node_modules prevents the host directory
+#      from overwriting the Linux-built node_modules installed in step 1.
+#
+# Result: any `npm install <pkg>` on the host will be invisible to the
+# container until you rebuild the image. Always run installs via docker exec:
+#   docker exec jobifai-frontend npm install <pkg>
+# ──────────────────────────────────────────────────────────────────────────────
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy manifests first — maximises layer cache reuse.
+# This layer is only invalidated when package.json or the lock file changes.
+COPY package.json package-lock.json ./
+
+# Install with the exact versions in the lock file.
+# --prefer-offline avoids re-downloading packages that are already cached.
+RUN npm ci --prefer-offline
+
+# Source code is NOT copied here — it is mounted at runtime by docker-compose.
+# This keeps the image small and lets you edit files on the host instantly.
+
+EXPOSE 5173
+
+# Vite dev server — binds to 0.0.0.0 so Docker can forward the port to macOS.
+# Polling is enabled via vite.config.ts (server.watch.usePolling: true) because
+# macOS bind mounts do not support inotify.
+CMD ["npm", "run", "dev"]

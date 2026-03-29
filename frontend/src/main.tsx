@@ -10,6 +10,7 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css'; // Tailwind base + global styles
 
@@ -26,6 +27,11 @@ ReactDOM.createRoot(rootElement).render(
   // help catch side effects in useEffect / useState that would break in
   // Concurrent Mode.  It has no effect in production builds.
   <React.StrictMode>
-    <App />
+    {/* BrowserRouter lives here per the Handbook §3.2:
+        main.tsx owns BrowserRouter + createRoot.
+        App.tsx owns the <Routes> tree + AnimatePresence. */}
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </React.StrictMode>,
 );

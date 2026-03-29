@@ -1,144 +1,107 @@
 /**
- * App.tsx — Root Component & Screen State Machine
+ * App.tsx — Route Tree
  * ─────────────────────────────────────────────────────────────────────────────
- * Manages the top-level "screen" the user is currently on:
+ * Owns: route definitions, AnimatePresence wrapper, auth-driven navigation.
+ * Does NOT own: BrowserRouter (lives in main.tsx), business logic.
  *
- *   onboarding  →  paywall  →  workspace
+ * PRD Route Map (Handbook §3.2 + PRD §§2–6):
+ *   /            → LandingPage    public  — soft-gate onboarding (PRD §2)
+ *   /dashboard   → DashboardPage  protected — hub, persists CV+JD (PRD §3)
+ *   /workspace   → WorkspacePage  protected — sandwich edit / interview (PRD §4)
+ *   /settings    → SettingsPage   protected — BYOK, language, privacy (PRD §6)
+ *   /paywall     → PaywallPage    public  — upgrade CTA (rarely a hard route)
+ *   /onboarding  → OnboardingPage protected — post-auth context capture
  *
- * Each transition is animated with Framer Motion.
- *
- * WHY local useState instead of the Zustand store?
- *   Screen-level navigation state is ephemeral and app-instance-specific.
- *   It doesn't need to be serialised, shared cross-component, or DevTools-
- *   inspectable.  A simple useState is the right tool for the job.
- *
- * WHY AnimatePresence here?
- *   We want the outgoing screen to animate OUT before the next one appears.
- *   AnimatePresence detects when a child is removed from the tree and plays
- *   its `exit` animation before unmounting.
+ * FSD note: per Handbook §3.2 this file should ultimately live at
+ * src/app/App.tsx. It stays at src/App.tsx for now so main.tsx needs no
+ * changes during this phase.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React, { useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { MainLayout }     from '@/layouts/MainLayout';
-import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
-import { PaywallModal }   from '@/components/paywall/PaywallModal';
-import { useAuth }        from '@/hooks/useAuth';
+import { Routes, Route, useLocation } from 'react-router-dom';
 
-// ─── Screen type ──────────────────────────────────────────────────────────────
-type Screen = 'onboarding' | 'paywall' | 'workspace';
+// Pages — route-level shells with NO business logic (Handbook §3.2)
+import LandingPage    from '@/pages/LandingPage';
+import DashboardPage  from '@/pages/DashboardPage';
+import WorkspacePage  from '@/pages/WorkspacePage';
+import SettingsPage   from '@/pages/SettingsPage';
+import PaywallPage    from '@/pages/PaywallPage';
+import OnboardingPage from '@/pages/OnboardingPage';
 
-// ─── Slide transition shared across all screens ───────────────────────────────
-const screenVariants = {
-  enter: (direction: number) => ({
-    x:       direction > 0 ?  '100%' : '-100%',
-    opacity: 0,
-  }),
-  center: {
-    x:       0,
-    opacity: 1,
-  },
-  exit: (direction: number) => ({
-    x:       direction < 0 ?  '100%' : '-100%',
-    opacity: 0,
-  }),
-};
+// Route guard — three-stage: loading → 401 redirect → missing context
+import ProtectedRoute from '@/app/router/ProtectedRoute';
 
-const screenTransition = {
-  type:      'tween' as const,
-  ease:      'easeInOut',
-  duration:  0.35,
-};
+// TODO Phase 2: wrap <Routes> in <AnimatePresence mode="wait"> once
+// framer-motion is installed. The location key drives exit/enter animations.
+// import { AnimatePresence } from 'framer-motion';
 
-// ─── App ──────────────────────────────────────────────────────────────────────
-const App: React.FC = () => {
-  // Detect Stripe return URL (?checkout=success) and jump straight to workspace.
-  // The webhook fires asynchronously — we optimistically show workspace; the
-  // is_premium flag will sync on next auth state change / page refresh.
-  const checkoutParam = new URLSearchParams(window.location.search).get('checkout');
-  const initialScreen: Screen = checkoutParam === 'success' ? 'workspace' : 'onboarding';
-
-  const [screen,    setScreen]    = useState<Screen>(initialScreen);
-  const [direction, setDirection] = useState(1); // +1 = forward, -1 = back
-
-  // Clean up the ?checkout= param from the URL so a refresh doesn't re-trigger
-  React.useEffect(() => {
-    if (checkoutParam) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete('checkout');
-      window.history.replaceState({}, '', url.toString());
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Initialise Supabase auth listener once at the app root.
-  // This restores any existing session and keeps the Zustand store in sync.
-  const auth = useAuth();
-
-  const goTo = (next: Screen) => {
-    const order: Screen[] = ['onboarding', 'paywall', 'workspace'];
-    const from = order.indexOf(screen);
-    const to   = order.indexOf(next);
-    setDirection(to > from ? 1 : -1);
-    setScreen(next);
-  };
+export default function App() {
+  // location is kept here so AnimatePresence can key on pathname once added.
+  const location = useLocation();
 
   return (
-    // Outer container: full viewport, clip overflow so slides don't show outside
-    <div className="fixed inset-0 bg-slate-50 overflow-hidden">
-      <AnimatePresence mode="wait" custom={direction}>
-        {screen === 'onboarding' && (
-          <motion.div
-            key="onboarding"
-            custom={direction}
-            variants={screenVariants}
-            initial="enter"
-            animate="center"
-            exit="exit"
-            transition={screenTransition}
-            className="absolute inset-0"
-          >
-            <OnboardingFlow onComplete={() => goTo('paywall')} />
-          </motion.div>
-        )}
+    // <AnimatePresence mode="wait">
+    <Routes location={location} key={location.pathname}>
 
-        {screen === 'paywall' && (
-          <motion.div
-            key="paywall"
-            custom={direction}
-            variants={screenVariants}
-            initial="enter"
-            animate="center"
-            exit="exit"
-            transition={screenTransition}
-            className="absolute inset-0"
-          >
-            {/*
-             * The workspace renders underneath so the paywall modal floats
-             * over a real (blurred) preview of the tool — adds desire.
-             */}
-            <MainLayout auth={auth} onHome={() => goTo('onboarding')} />
-            <PaywallModal onAccessGranted={() => goTo('workspace')} />
-          </motion.div>
-        )}
+      {/* ── Public routes ─────────────────────────────────────────────────── */}
 
-        {screen === 'workspace' && (
-          <motion.div
-            key="workspace"
-            custom={direction}
-            variants={screenVariants}
-            initial="enter"
-            animate="center"
-            exit="exit"
-            transition={screenTransition}
-            className="absolute inset-0"
-          >
-            <MainLayout auth={auth} onHome={() => goTo('onboarding')} />
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+      {/* Soft-gate landing: CV + JD upload → ATS score → soft auth prompt.
+          User sees real computed value (their score) before any account is
+          required. PRD §2.1: "Critical constraint: score before auth." */}
+      <Route path="/" element={<LandingPage />} />
+
+      {/* Paywall: usually shown as a modal; this route handles direct links. */}
+      <Route path="/paywall" element={<PaywallPage />} />
+
+      {/* ── Protected routes ──────────────────────────────────────────────── */}
+
+      {/* Dashboard — the Hub. Holds CV + JD context across all spoke sessions.
+          PRD §1.2: "useDocumentStore survives route changes." */}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Workspace — mode driven by ?mode=resume|interview|cover (PRD §4.8).
+          useSessionStore.workspaceMode is hydrated from the URL param on mount. */}
+      <Route
+        path="/workspace"
+        element={
+          <ProtectedRoute>
+            <WorkspacePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Settings — BYOK Gemini key, language prefs, data privacy (PRD §6). */}
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute>
+            <SettingsPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Onboarding — post-auth context capture (placeholder). */}
+      <Route
+        path="/onboarding"
+        element={
+          <ProtectedRoute>
+            <OnboardingPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ── Fallback ──────────────────────────────────────────────────────── */}
+      {/* Unknown paths fall back to landing; no 404 page yet. */}
+      <Route path="*" element={<LandingPage />} />
+
+    </Routes>
+    // </AnimatePresence>
   );
-};
-
-export default App;
+}
