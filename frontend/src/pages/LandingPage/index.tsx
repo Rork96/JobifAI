@@ -15,10 +15,12 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
 import MacMascot, { type MacState } from '@/shared/ui/MacMascot';
 import AtsScoreDial from '@/shared/ui/AtsScoreDial';
+import { useAuthStore } from '@/store/useAuthStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -164,6 +166,7 @@ interface ScorePanelProps {
 }
 
 function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
+  const navigate = useNavigate();
   const isLow = score < 40;
 
   return (
@@ -209,8 +212,8 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
                       flex flex-col sm:flex-row gap-3">
         <button
           onClick={() => {
-            // TODO Phase 3: useBillingStore.getState().openAuthModal('fix-resume')
-            console.log('Open Auth Modal', { intent: 'fix-resume' });
+            useAuthStore.getState().setUser({ id: '1', email: 'test@jobifai.com' });
+            navigate('/dashboard');
           }}
           className="flex-1 flex items-center justify-center gap-2 px-5 py-3
                      rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.98]
@@ -221,8 +224,8 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
         </button>
         <button
           onClick={() => {
-            // TODO Phase 3: useBillingStore.getState().openAuthModal('start-interview')
-            console.log('Open Auth Modal', { intent: 'start-interview' });
+            useAuthStore.getState().setUser({ id: '1', email: 'test@jobifai.com' });
+            navigate('/dashboard');
           }}
           className="flex-1 flex items-center justify-center gap-2 px-5 py-3
                      rounded-xl bg-white hover:bg-slate-50 active:scale-[0.98]
@@ -239,6 +242,7 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function LandingPage() {
+  const navigate = useNavigate();
   const [pageState, setPageState] = useState<PageState>('idle');
   const [cvFile, setCvFile]       = useState<File | null>(null);
   const [jdText, setJdText]       = useState('');
