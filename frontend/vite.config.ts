@@ -31,7 +31,9 @@ export default defineConfig({
     // Without this Vite binds only to 127.0.0.1 (loopback) and Docker cannot
     // forward the port to the macOS host.
     host: '0.0.0.0',
-    port: 5173,
+    // 5174 — worktree dev server. 5173 is reserved for the main-branch
+    // frontend so both can run side-by-side without conflicting.
+    port: 5174,
 
     // macOS Docker bind mounts don't support inotify. Without polling Vite
     // never sees file changes and HMR silently stops working.
@@ -45,7 +47,7 @@ export default defineConfig({
     // the dev server via the Docker-forwarded port.
     hmr: {
       host: 'localhost',
-      port: 5173,
+      port: 5174,
     },
 
     // Dev proxy: any request to /api/* is forwarded to the FastAPI backend.

@@ -3,17 +3,17 @@
   "configurations": [
     {
       "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
-      "port": 5173,
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "cd frontend && /opt/homebrew/Cellar/node/25.8.0/bin/node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5174"],
+      "port": 5174,
       "autoPort": false
     },
     {
       "name": "backend",
-      "runtimeExecutable": "/Users/rorkpashagmail.com/Documents/JobifAI/.claude/worktrees/sad-brattain/.venv/bin/python3",
+      "runtimeExecutable": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
       "runtimeArgs": [
         "-c",
-        "import os, sys; wd='/Users/rorkpashagmail.com/Documents/JobifAI/.claude/worktrees/sad-brattain'; sys.path.insert(0, wd); os.chdir(wd); [os.environ.setdefault(k.strip(), v.strip()) for line in open(wd+'/.env') if '=' in line and not line.startswith('#') for k, v in [line.strip().split('=', 1)]]; os.execv(wd+'/.venv/bin/uvicorn', ['uvicorn', 'backend.main:app', '--reload', '--host', '0.0.0.0', '--port', '8000'])"
+        "import os, sys; wd='/Users/rorkpashagmail.com/Documents/JobifAI/.claude/worktrees/quirky-lederberg'; sys.path.insert(0, wd); os.chdir(wd); env=wd+'/.env'; [os.environ.setdefault(k.strip(), v.strip()) for line in (open(env) if os.path.exists(env) else []) if '=' in line and not line.startswith('#') for k, v in [line.strip().split('=', 1)]]; os.execv('/Library/Frameworks/Python.framework/Versions/3.13/bin/uvicorn', ['uvicorn', 'backend.main:app', '--reload', '--host', '0.0.0.0', '--port', '8000'])"
       ],
       "port": 8000,
       "autoPort": false

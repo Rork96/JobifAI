@@ -81,7 +81,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // ── Initial state ──────────────────────────────────────────────────────────
   user: null,
   isPremium: false,
-  isAuthLoading: true, // true until Supabase onAuthStateChange fires once
+  isAuthLoading: false, // false until onAuthStateChange is wired (Phase 2)
+  // Phase 2: the auth feature hook will set this to `true` immediately on
+  // mount, then to `false` once Supabase resolves the session. For now it
+  // starts false so ProtectedRoute redirects unauthenticated users
+  // immediately instead of spinning forever.
   freeRewrites: 3,     // matches DB default in freemium_limits migration
   freeInterviews: 1,
   isSaving: false,

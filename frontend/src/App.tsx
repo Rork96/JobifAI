@@ -18,6 +18,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import { useEffect } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 
 // Pages — route-level shells with NO business logic (Handbook §3.2)
@@ -31,6 +32,13 @@ import OnboardingPage from '@/pages/OnboardingPage';
 // Route guard — three-stage: loading → 401 redirect → missing context
 import ProtectedRoute from '@/app/router/ProtectedRoute';
 
+// Stores — imported for one-time mount log only (remove with DevNav in Phase 2)
+import { useAuthStore }     from '@/store/useAuthStore';
+import { useBillingStore }  from '@/store/useBillingStore';
+import { useSessionStore }  from '@/store/useSessionStore';
+import { useChatStore }     from '@/store/useChatStore';
+import { useDocumentStore } from '@/store/useDocumentStore';
+
 // TODO Phase 2: wrap <Routes> in <AnimatePresence mode="wait"> once
 // framer-motion is installed. The location key drives exit/enter animations.
 // import { AnimatePresence } from 'framer-motion';
@@ -38,6 +46,18 @@ import ProtectedRoute from '@/app/router/ProtectedRoute';
 export default function App() {
   // location is kept here so AnimatePresence can key on pathname once added.
   const location = useLocation();
+
+  // DEV ONLY — log all 5 Zustand slices once on mount so you can verify
+  // initial state in the browser console. Remove with DevNav before Phase 2.
+  useEffect(() => {
+    console.group('[JobifAI] useAppStore — 5 slice initial state');
+    console.log('useAuthStore    →', useAuthStore.getState());
+    console.log('useBillingStore →', useBillingStore.getState());
+    console.log('useSessionStore →', useSessionStore.getState());
+    console.log('useChatStore    →', useChatStore.getState());
+    console.log('useDocumentStore→', useDocumentStore.getState());
+    console.groupEnd();
+  }, []);
 
   return (
     // <AnimatePresence mode="wait">
