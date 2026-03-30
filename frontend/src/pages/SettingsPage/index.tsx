@@ -1,36 +1,40 @@
 /**
- * SettingsPage — Route: /settings
- * ─────────────────────────────────────────────────────────────────────────────
+ * SettingsPage — Route: /settings  (protected)
  * PRD §6 — Settings, Privacy & Localization
- *
- * Required sections (Phase 2 implementation):
- *
- *   §6.1 — BYOK (Bring Your Own Key)
- *     Gemini API key field. Stored in useSessionStore.byokApiKey — NEVER in DB.
- *     Key lives only in Zustand for the session lifetime.
- *     Persistent BYOK storage (encrypted in localStorage) is the UX goal.
- *     When set, bypasses all server-side quota (PRD §1.4).
- *
- *   §6.2 — Language Preferences
- *     User interface language (useSessionStore.userLang)
- *     Resume language (useSessionStore.resumeLang)
- *     Drives AI prompt language and score label copy.
- *
- *   §6.3 — Data Privacy
- *     [Clear my data] → DELETE /api/user/data → clears DB row, Zustand stores
- *     [Delete account] → DELETE /api/user/account (future)
- *
- *   §6.4 — Account / Subscription
- *     Plan status (free / pass / monthly) from useBillingStore
- *     [Manage billing] → Stripe Customer Portal link
- * ─────────────────────────────────────────────────────────────────────────────
+ * TODO Phase 2: BYOK key field, language prefs, data privacy controls, billing portal.
  */
+import DevNav from '@/shared/ui/DevNav';
 
 export default function SettingsPage() {
   return (
-    <main>
-      {/* TODO Phase 2: implement full settings per PRD §6 */}
-      <h1>SettingsPage — placeholder</h1>
-    </main>
+    <div style={{ paddingTop: '56px', minHeight: '100vh', background: '#fdf4ff' }}>
+      <DevNav />
+      <div style={{ padding: '48px 32px', maxWidth: '720px', margin: '0 auto' }}>
+        <h1 style={{
+          fontSize: '48px', fontWeight: 900, color: '#0f172a',
+          borderLeft: '6px solid #a855f7', paddingLeft: '16px',
+          marginBottom: '24px',
+        }}>
+          Settings
+        </h1>
+        <p style={{ color: '#475569', fontSize: '18px', lineHeight: 1.6 }}>
+          <strong>Route:</strong> <code>/settings</code> — Protected (JWT required)
+        </p>
+        <p style={{ color: '#475569', fontSize: '16px', marginTop: '12px' }}>
+          Phase 2 sections: BYOK Gemini key (session-only, never DB) ·
+          UI + resume language prefs · data privacy / account deletion ·
+          Stripe billing portal link.
+        </p>
+        <div style={{
+          marginTop: '32px', padding: '16px', borderRadius: '8px',
+          background: '#f3e8ff', border: '1px solid #d8b4fe',
+          fontSize: '14px', color: '#6b21a8',
+        }}>
+          🔑 <strong>BYOK rule (PRD §1.4):</strong> <code>useChatStore.byokApiKey</code> is
+          stored in Zustand only — never persisted to DB, never sent to Supabase.
+          Bypasses all server-side quota when set.
+        </div>
+      </div>
+    </div>
   );
 }

@@ -1,29 +1,39 @@
 /**
- * PaywallPage — Route: /paywall
- * ─────────────────────────────────────────────────────────────────────────────
- * Rarely navigated to directly — the primary paywall experience is a modal
- * (PaywallModal from features/billing/ui). This route exists for:
- *   - Direct links (e.g. from email campaigns)
- *   - SEO / pricing page
- *   - Stripe return URL fallback
- *
- * Freemium limits (PRD §1.4 — server-side authoritative):
- *   Free:    3 magic rewrites, 1 interview session
- *   Premium: unlimited (pass $4.99/24h or monthly $14.99)
- *
- * Required UI sections (Phase 2 implementation):
- *   - Pricing cards: Free vs 24-hr Pass vs Monthly
- *   - Stripe Checkout CTA for each paid tier
- *   - Feature comparison table
- *   - BYOK callout: "Have your own Gemini key? Use it free, forever."
- * ─────────────────────────────────────────────────────────────────────────────
+ * PaywallPage — Route: /paywall  (public)
+ * PRD §1.4 — Freemium limits & pricing
+ * TODO Phase 2: pricing cards, Stripe Checkout CTAs, BYOK callout.
  */
+import DevNav from '@/shared/ui/DevNav';
 
 export default function PaywallPage() {
   return (
-    <main>
-      {/* TODO Phase 2: implement paywall / pricing page */}
-      <h1>PaywallPage — placeholder</h1>
-    </main>
+    <div style={{ paddingTop: '56px', minHeight: '100vh', background: '#fff7ed' }}>
+      <DevNav />
+      <div style={{ padding: '48px 32px', maxWidth: '720px', margin: '0 auto' }}>
+        <h1 style={{
+          fontSize: '48px', fontWeight: 900, color: '#0f172a',
+          borderLeft: '6px solid #f97316', paddingLeft: '16px',
+          marginBottom: '24px',
+        }}>
+          Paywall / Pricing
+        </h1>
+        <p style={{ color: '#475569', fontSize: '18px', lineHeight: 1.6 }}>
+          <strong>Route:</strong> <code>/paywall</code> — Public
+        </p>
+        <p style={{ color: '#475569', fontSize: '16px', marginTop: '12px' }}>
+          Phase 2 will render: Free vs 24-hr Pass ($4.99) vs Monthly ($14.99) ·
+          Stripe Checkout CTA · BYOK "use your own key, free forever" callout.
+        </p>
+        <div style={{
+          marginTop: '32px', padding: '16px', borderRadius: '8px',
+          background: '#ffedd5', border: '1px solid #fdba74',
+          fontSize: '14px', color: '#9a3412',
+        }}>
+          🚫 <strong>Server is authoritative (PRD §1.4):</strong> Frontend counters in
+          <code> useBillingStore</code> are display-only. <code>check_action_limit</code> FastAPI
+          dependency is the enforcement gate — it cannot be bypassed by client state.
+        </div>
+      </div>
+    </div>
   );
 }

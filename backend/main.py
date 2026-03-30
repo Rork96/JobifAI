@@ -24,7 +24,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-import google.generativeai as genai        # Gemini SDK — configured at startup
+import google.generativeai as genai         # Gemini SDK — configured at startup
 
 from .config import Settings, get_settings  # typed settings — see config/__init__.py
 from .routers import evaluate               # Task 5: ATS edit scorer endpoint
