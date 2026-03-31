@@ -18,13 +18,20 @@
  *
  * Sandwich diff rules (PRD §4.5):
  *   - Maximum ONE active pendingDiff at a time.
- *   - applyDiff() → PATCH /api/resume/accept-diff then clears pendingDiff.
+ *   - improveBullet() → POST /api/rewrite-section → sets pendingDiff.
+ *   - applyDiff() clears pendingDiff (WorkspacePage updates local bullet text).
  *   - rejectDiff() clears pendingDiff only — no API call, no counter consumed.
+ *
+ * Phase 8 additions:
+ *   - improvingBulletId: tracks which bullet is waiting for the AI response.
+ *   - activeJobDescription: the full JD text for passing to the rewrite API.
+ *   - improveBullet(): async thunk that calls POST /api/rewrite-section.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import { create } from 'zustand';
 import { insertResume, fetchLatestResume } from '@/lib/db';
+import { improveBullet as apiBulletImprove, ApiError } from '@/lib/api';
 import { useToastStore } from '@/store/useToastStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -52,13 +59,15 @@ interface DocumentState {
 
   // ── Active resume (set after persistResume or loadLatestResume) ───────────
   /** Supabase resumes.id of the currently active document. Null until first persist. */
-  activeResumeId:   string | null;
+  activeResumeId:       string | null;
   /** Filename shown in DashboardPage ContextBar */
-  activeCvFilename: string | null;
+  activeCvFilename:     string | null;
   /** JD snippet for ContextBar display (first 60 chars of job_description) */
-  activeJdSnippet:  string | null;
+  activeJdSnippet:      string | null;
+  /** Full job description — passed to rewrite API for keyword alignment */
+  activeJobDescription: string | null;
   /** Whether the dashboard is fetching resume data from DB */
-  isLoadingResume:  boolean;
+  isLoadingResume:      boolean;
 
   // ── ATS score state ────────────────────────────────────────────────────────
   currentAtsScore: number | null;
@@ -68,6 +77,10 @@ interface DocumentState {
   // ── Live document state ────────────────────────────────────────────────────
   resumeData:  ResumeData | null;
   pendingDiff: PendingDiff | null;
+
+  // ── AI improvement state (Phase 8) ────────────────────────────────────────
+  /** ID of the bullet currently being AI-rewritten. Null when idle. */
+  improvingBulletId: string | null;
 
   // ── Analysis state ─────────────────────────────────────────────────────────
   skillGaps:      string[];
@@ -102,6 +115,29 @@ interface DocumentState {
   applyDiff:      () => void;
   rejectDiff:     () => void;
 
+  /**
+   * POST /api/rewrite-section — ask the AI to improve a specific resume bullet.
+   *
+   * Flow:
+   *   1. Sets improvingBulletId → bullet shows loading skeleton.
+   *   2. Clears any existing pendingDiff (one diff at a time).
+   *   3. Calls POST /api/rewrite-section with bullet text + JD context.
+   *   4a. Success → sets pendingDiff with the AI suggestion.
+   *   4b. Error   → shows error toast, leaves bullet as-is.
+   *   5. Clears improvingBulletId.
+   *
+   * @param bulletId      ID of the targeted bullet (used as fieldPath in the diff)
+   * @param bulletText    Current text of the bullet to rewrite
+   * @param resumeContext Condensed text of other bullets (for dedup prevention)
+   * @param signal        Optional AbortSignal for request cancellation
+   */
+  improveBullet: (
+    bulletId:      string,
+    bulletText:    string,
+    resumeContext: string,
+    signal?:       AbortSignal,
+  ) => Promise<void>;
+
   bumpAtsScore: (delta: number) => void;
 
   setAnalysisResult: (
@@ -118,25 +154,27 @@ interface DocumentState {
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   // ── Initial state ──────────────────────────────────────────────────────────
-  pendingCvFile:    null,
-  pendingJdText:    '',
-  pendingAtsScore:  null,
-  pendingAtsGaps:   [],
-  activeResumeId:   null,
-  activeCvFilename: null,
-  activeJdSnippet:  null,
-  isLoadingResume:  false,
-  currentAtsScore:  null,
-  realAtsScore:     null,
-  atsGaps:          [],
-  resumeData:       null,
-  pendingDiff:      null,
-  skillGaps:        [],
-  matchedSkills:    [],
-  missingSkills:    [],
-  analysisResult:   null,
-  isAnalyzing:      false,
-  analysisError:    null,
+  pendingCvFile:        null,
+  pendingJdText:        '',
+  pendingAtsScore:      null,
+  pendingAtsGaps:       [],
+  activeResumeId:       null,
+  activeCvFilename:     null,
+  activeJdSnippet:      null,
+  activeJobDescription: null,
+  isLoadingResume:      false,
+  currentAtsScore:      null,
+  realAtsScore:         null,
+  atsGaps:              [],
+  resumeData:           null,
+  pendingDiff:          null,
+  improvingBulletId:    null,
+  skillGaps:            [],
+  matchedSkills:        [],
+  missingSkills:        [],
+  analysisResult:       null,
+  isAnalyzing:          false,
+  analysisError:        null,
 
   // ── Actions ────────────────────────────────────────────────────────────────
   setPendingCvFile:   (file)  => set({ pendingCvFile: file }),
@@ -167,17 +205,18 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     }
 
     set({
-      activeResumeId:   data.id,
-      activeCvFilename: data.cv_filename,
-      activeJdSnippet:  data.job_description?.slice(0, 60) ?? null,
-      currentAtsScore:  data.current_ats_score,
-      realAtsScore:     data.current_ats_score,
-      atsGaps:          data.ats_gaps as string[],
+      activeResumeId:       data.id,
+      activeCvFilename:     data.cv_filename,
+      activeJdSnippet:      data.job_description?.slice(0, 60) ?? null,
+      activeJobDescription: data.job_description ?? null,
+      currentAtsScore:      data.current_ats_score,
+      realAtsScore:         data.current_ats_score,
+      atsGaps:              data.ats_gaps as string[],
       // Clear pending state — consumed
-      pendingCvFile:    null,
-      pendingJdText:    '',
-      pendingAtsScore:  null,
-      pendingAtsGaps:   [],
+      pendingCvFile:        null,
+      pendingJdText:        '',
+      pendingAtsScore:      null,
+      pendingAtsGaps:       [],
     });
   },
 
@@ -197,12 +236,13 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     if (!data) return; // first-time user, no resume yet — show empty state
 
     set({
-      activeResumeId:   data.id,
-      activeCvFilename: data.cv_filename,
-      activeJdSnippet:  data.job_description?.slice(0, 60) ?? null,
-      currentAtsScore:  data.current_ats_score,
-      realAtsScore:     data.current_ats_score,
-      atsGaps:          data.ats_gaps as string[],
+      activeResumeId:       data.id,
+      activeCvFilename:     data.cv_filename,
+      activeJdSnippet:      data.job_description?.slice(0, 60) ?? null,
+      activeJobDescription: data.job_description ?? null,
+      currentAtsScore:      data.current_ats_score,
+      realAtsScore:         data.current_ats_score,
+      atsGaps:              data.ats_gaps as string[],
     });
   },
 
@@ -211,13 +251,69 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setPendingDiff: (diff) => set({ pendingDiff: diff }),
 
   applyDiff: () => {
-    const { pendingDiff } = get();
-    if (!pendingDiff) return;
-    // TODO Phase 8: PATCH /api/resume/accept-diff via features/document-editor/api/
     set({ pendingDiff: null });
+    // Caller (WorkspacePage) is responsible for applying the text change to
+    // local section state. DB persistence happens in Phase 9 via updateResumeScore.
   },
 
   rejectDiff: () => set({ pendingDiff: null }),
+
+  // ── Phase 8: AI bullet improvement ────────────────────────────────────────
+
+  improveBullet: async (bulletId, bulletText, resumeContext, signal) => {
+    const { activeJobDescription, pendingDiff } = get();
+
+    // If another bullet already has a pending diff, clear it first
+    // (PRD §4.5: maximum ONE active pendingDiff at a time)
+    if (pendingDiff && pendingDiff.fieldPath !== bulletId) {
+      set({ pendingDiff: null });
+    }
+
+    // Mark this bullet as loading (shows skeleton in SandwichDiffInline)
+    set({ improvingBulletId: bulletId });
+
+    try {
+      const response = await apiBulletImprove(
+        {
+          section:         'Experience bullet',
+          old_text:        bulletText,
+          job_description: activeJobDescription ?? '',
+          resume_context:  resumeContext,
+        },
+        { signal },
+      );
+
+      // Populate the diff with real AI data
+      set({
+        pendingDiff: {
+          fieldPath:    bulletId,
+          originalText: bulletText,
+          proposedText: response.new_text,
+          scoreImpact:  response.predicted_score_increase,
+        },
+      });
+    } catch (err: unknown) {
+      // AbortError means the user cancelled (clicked another bullet) — silent
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+
+      // Surface meaningful error messages to the user
+      if (err instanceof ApiError) {
+        const msg = err.isServerError
+          ? 'AI rewrite unavailable — the backend returned an error. Please try again.'
+          : err.isNetworkError
+            ? 'Could not reach the AI backend. Is the server running?'
+            : `AI rewrite failed (${err.status}).`;
+        useToastStore.getState().show(msg, 'error');
+      } else {
+        useToastStore.getState().show('AI rewrite failed unexpectedly.', 'error');
+      }
+
+      console.error('[useDocumentStore] improveBullet error:', err);
+    } finally {
+      // Always clear the loading indicator, even on error
+      set({ improvingBulletId: null });
+    }
+  },
 
   bumpAtsScore: (delta) =>
     set(s => ({
@@ -237,23 +333,25 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   clearDocument: () =>
     set({
-      pendingCvFile:    null,
-      pendingJdText:    '',
-      pendingAtsScore:  null,
-      pendingAtsGaps:   [],
-      activeResumeId:   null,
-      activeCvFilename: null,
-      activeJdSnippet:  null,
-      currentAtsScore:  null,
-      realAtsScore:     null,
-      atsGaps:          [],
-      resumeData:       null,
-      pendingDiff:      null,
-      skillGaps:        [],
-      matchedSkills:    [],
-      missingSkills:    [],
-      analysisResult:   null,
-      isAnalyzing:      false,
-      analysisError:    null,
+      pendingCvFile:        null,
+      pendingJdText:        '',
+      pendingAtsScore:      null,
+      pendingAtsGaps:       [],
+      activeResumeId:       null,
+      activeCvFilename:     null,
+      activeJdSnippet:      null,
+      activeJobDescription: null,
+      currentAtsScore:      null,
+      realAtsScore:         null,
+      atsGaps:              [],
+      resumeData:           null,
+      pendingDiff:          null,
+      improvingBulletId:    null,
+      skillGaps:            [],
+      matchedSkills:        [],
+      missingSkills:        [],
+      analysisResult:       null,
+      isAnalyzing:          false,
+      analysisError:        null,
     }),
 }));

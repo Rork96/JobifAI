@@ -123,7 +123,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.environment == "dev":
         allowed_origins += [
             "http://localhost:4173",   # Vite preview (npm run preview)
+            "http://localhost:5174",   # Vite dev server alternate port
             "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
         ]
 
     app.add_middleware(
