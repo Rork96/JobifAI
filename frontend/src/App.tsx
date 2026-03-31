@@ -1,121 +1,137 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+/**
+ * App.tsx — Route Tree
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Owns: route definitions, AnimatePresence wrapper, auth-driven navigation.
+ * Does NOT own: BrowserRouter (lives in main.tsx), business logic.
+ *
+ * PRD Route Map (Handbook §3.2 + PRD §§2–6):
+ *   /            → LandingPage    public  — soft-gate onboarding (PRD §2)
+ *   /dashboard   → DashboardPage  protected — hub, persists CV+JD (PRD §3)
+ *   /workspace   → WorkspacePage  protected — sandwich edit / interview (PRD §4)
+ *   /settings    → SettingsPage   protected — BYOK, language, privacy (PRD §6)
+ *   /paywall     → PaywallPage    public  — upgrade CTA (rarely a hard route)
+ *   /onboarding  → OnboardingPage protected — post-auth context capture
+ *
+ * FSD note: per Handbook §3.2 this file should ultimately live at
+ * src/app/App.tsx. It stays at src/App.tsx for now so main.tsx needs no
+ * changes during this phase.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 
-function App() {
-  const [count, setCount] = useState(0)
+import { useEffect } from 'react';
+import { Routes, Route, useLocation } from 'react-router-dom';
+
+// Pages — route-level shells with NO business logic (Handbook §3.2)
+import LandingPage    from '@/pages/LandingPage';
+import DashboardPage  from '@/pages/DashboardPage';
+import WorkspacePage  from '@/pages/WorkspacePage';
+import SettingsPage   from '@/pages/SettingsPage';
+import PaywallPage    from '@/pages/PaywallPage';
+import OnboardingPage from '@/pages/OnboardingPage';
+
+// Route guard — three-stage: loading → 401 redirect → missing context
+import ProtectedRoute from '@/app/router/ProtectedRoute';
+
+// Global UI
+import Toaster from '@/shared/ui/Toaster';
+
+// Stores
+import { useAuthStore }     from '@/store/useAuthStore';
+import { useBillingStore }  from '@/store/useBillingStore';
+import { useSessionStore }  from '@/store/useSessionStore';
+import { useChatStore }     from '@/store/useChatStore';
+import { useDocumentStore } from '@/store/useDocumentStore';
+
+export default function App() {
+  const location = useLocation();
+
+  // Start the Supabase auth listener once, on mount.
+  // initAuth() subscribes to onAuthStateChange and returns the unsubscribe fn.
+  // isAuthLoading starts true; the first INITIAL_SESSION event sets it false,
+  // preventing ProtectedRoute from flashing the redirect before session restore.
+  useEffect(() => {
+    const unsubscribe = useAuthStore.getState().initAuth();
+    return unsubscribe;
+  }, []);
+
+  // DEV ONLY — log all 5 Zustand slices once on mount
+  useEffect(() => {
+    console.group('[JobifAI] useAppStore — 5 slice initial state');
+    console.log('useAuthStore    →', useAuthStore.getState());
+    console.log('useBillingStore →', useBillingStore.getState());
+    console.log('useSessionStore →', useSessionStore.getState());
+    console.log('useChatStore    →', useChatStore.getState());
+    console.log('useDocumentStore→', useDocumentStore.getState());
+    console.groupEnd();
+  }, []);
 
   return (
     <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    {/* Global toast — rendered outside Routes so it survives navigation */}
+    <Toaster />
+    {/* <AnimatePresence mode="wait"> */}
+    <Routes location={location} key={location.pathname}>
 
-      <div className="ticks"></div>
+      {/* ── Public routes ─────────────────────────────────────────────────── */}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {/* Soft-gate landing: CV + JD upload → ATS score → soft auth prompt.
+          User sees real computed value (their score) before any account is
+          required. PRD §2.1: "Critical constraint: score before auth." */}
+      <Route path="/" element={<LandingPage />} />
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
+      {/* Paywall: usually shown as a modal; this route handles direct links. */}
+      <Route path="/paywall" element={<PaywallPage />} />
+
+      {/* ── Protected routes ──────────────────────────────────────────────── */}
+
+      {/* Dashboard — the Hub. Holds CV + JD context across all spoke sessions.
+          PRD §1.2: "useDocumentStore survives route changes." */}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Workspace — mode driven by ?mode=resume|interview|cover (PRD §4.8).
+          useSessionStore.workspaceMode is hydrated from the URL param on mount. */}
+      <Route
+        path="/workspace"
+        element={
+          <ProtectedRoute>
+            <WorkspacePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Settings — BYOK Gemini key, language prefs, data privacy (PRD §6). */}
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute>
+            <SettingsPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Onboarding — post-auth context capture (placeholder). */}
+      <Route
+        path="/onboarding"
+        element={
+          <ProtectedRoute>
+            <OnboardingPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ── Fallback ──────────────────────────────────────────────────────── */}
+      {/* Unknown paths fall back to landing; no 404 page yet. */}
+      <Route path="*" element={<LandingPage />} />
+
+    </Routes>
+    {/* </AnimatePresence> */}
     </>
-  )
+  );
 }
-
-export default App
