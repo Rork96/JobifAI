@@ -32,23 +32,26 @@ import OnboardingPage from '@/pages/OnboardingPage';
 // Route guard — three-stage: loading → 401 redirect → missing context
 import ProtectedRoute from '@/app/router/ProtectedRoute';
 
-// Stores — imported for one-time mount log only (remove with DevNav in Phase 2)
+// Stores
 import { useAuthStore }     from '@/store/useAuthStore';
 import { useBillingStore }  from '@/store/useBillingStore';
 import { useSessionStore }  from '@/store/useSessionStore';
 import { useChatStore }     from '@/store/useChatStore';
 import { useDocumentStore } from '@/store/useDocumentStore';
 
-// TODO Phase 2: wrap <Routes> in <AnimatePresence mode="wait"> once
-// framer-motion is installed. The location key drives exit/enter animations.
-// import { AnimatePresence } from 'framer-motion';
-
 export default function App() {
-  // location is kept here so AnimatePresence can key on pathname once added.
   const location = useLocation();
 
-  // DEV ONLY — log all 5 Zustand slices once on mount so you can verify
-  // initial state in the browser console. Remove with DevNav before Phase 2.
+  // Start the Supabase auth listener once, on mount.
+  // initAuth() subscribes to onAuthStateChange and returns the unsubscribe fn.
+  // isAuthLoading starts true; the first INITIAL_SESSION event sets it false,
+  // preventing ProtectedRoute from flashing the redirect before session restore.
+  useEffect(() => {
+    const unsubscribe = useAuthStore.getState().initAuth();
+    return unsubscribe;
+  }, []);
+
+  // DEV ONLY — log all 5 Zustand slices once on mount
   useEffect(() => {
     console.group('[JobifAI] useAppStore — 5 slice initial state');
     console.log('useAuthStore    →', useAuthStore.getState());

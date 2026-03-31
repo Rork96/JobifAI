@@ -15,12 +15,11 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
 import MacMascot, { type MacState } from '@/shared/ui/MacMascot';
 import AtsScoreDial from '@/shared/ui/AtsScoreDial';
-import { useAuthStore } from '@/store/useAuthStore';
+import AuthModal, { type AuthIntent } from '@/shared/ui/AuthModal';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -163,10 +162,10 @@ interface ScorePanelProps {
   score: number;
   gaps: string[];
   mascotState: MacState;
+  onOpenAuth: (intent: AuthIntent) => void;
 }
 
-function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
-  const navigate = useNavigate();
+function ScorePanel({ score, gaps, mascotState, onOpenAuth }: ScorePanelProps) {
   const isLow = score < 40;
 
   return (
@@ -211,10 +210,7 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
       <div className="border-t border-slate-100 bg-slate-50 p-4 sm:p-6
                       flex flex-col sm:flex-row gap-3">
         <button
-          onClick={() => {
-            useAuthStore.getState().setUser({ id: '1', email: 'test@jobifai.com' });
-            navigate('/dashboard');
-          }}
+          onClick={() => onOpenAuth('fix-resume')}
           className="flex-1 flex items-center justify-center gap-2 px-5 py-3
                      rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.98]
                      text-white font-semibold text-sm shadow-brand
@@ -223,10 +219,7 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
           🔧 Fix My Resume
         </button>
         <button
-          onClick={() => {
-            useAuthStore.getState().setUser({ id: '1', email: 'test@jobifai.com' });
-            navigate('/dashboard');
-          }}
+          onClick={() => onOpenAuth('start-interview')}
           className="flex-1 flex items-center justify-center gap-2 px-5 py-3
                      rounded-xl bg-white hover:bg-slate-50 active:scale-[0.98]
                      text-slate-700 font-semibold text-sm border border-slate-200
@@ -242,10 +235,16 @@ function ScorePanel({ score, gaps, mascotState }: ScorePanelProps) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function LandingPage() {
-  const navigate = useNavigate();
-  const [pageState, setPageState] = useState<PageState>('idle');
-  const [cvFile, setCvFile]       = useState<File | null>(null);
-  const [jdText, setJdText]       = useState('');
+  const [pageState, setPageState]   = useState<PageState>('idle');
+  const [cvFile, setCvFile]         = useState<File | null>(null);
+  const [jdText, setJdText]         = useState('');
+  const [authOpen, setAuthOpen]     = useState(false);
+  const [authIntent, setAuthIntent] = useState<AuthIntent>('general');
+
+  const openAuth = (intent: AuthIntent) => {
+    setAuthIntent(intent);
+    setAuthOpen(true);
+  };
 
   // Mascot state is derived from page state + score
   const mascotState: MacState = (() => {
@@ -389,11 +388,19 @@ export default function LandingPage() {
               score={MOCK_SCORE}
               gaps={MOCK_GAPS}
               mascotState={mascotState}
+              onOpenAuth={openAuth}
             />
           )}
         </AnimatePresence>
 
       </main>
+
+      {/* Auth modal — opened by soft-gate CTAs */}
+      <AuthModal
+        isOpen={authOpen}
+        onClose={() => setAuthOpen(false)}
+        intent={authIntent}
+      />
     </div>
   );
 }
