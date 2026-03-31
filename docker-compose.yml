@@ -2,12 +2,12 @@
 # JobifAI — Docker Compose (development + production on Raspberry Pi 5)
 #
 # Usage:
-#   Development (hot-reload):  docker compose up
+#   Development (hot-reload):  docker compose -f docker-compose.dev.yml up --build
 #   Production (daemon):       docker compose -f docker-compose.yml up -d
 #
 # Architecture overview:
 #   ┌──────────────────────────────────────────────────────┐
-#   │  Raspberry Pi 5  (linux/arm64)                       │
+#   │  Local Mac M3 / Raspberry Pi 5                       │
 #   │                                                      │
 #   │  ┌──────────────┐     ┌──────────────────────────┐  │
 #   │  │  frontend    │     │  backend (FastAPI)        │  │
@@ -19,10 +19,6 @@
 #   │                          │  (hosted cloud)│          │
 #   │                          └────────────────┘          │
 #   └──────────────────────────────────────────────────────┘
-#
-# Note: The frontend (Vite/React) runs outside Docker in development for
-# fast HMR.  In production we'll build a static bundle and serve it via
-# Nginx (added in a later task).
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -37,41 +33,25 @@ services:
         - linux/arm64
 
     image: jobifai-backend:latest
-
     container_name: jobifai-backend
-
     restart: unless-stopped   # Auto-restart on crash; stop manually with `docker stop`
 
     # ── Port mapping ─────────────────────────────────────────────────────────
-    # Format: "HOST:CONTAINER"
-    # The backend listens on 8000 inside the container.
-    # We expose 8000 on the host so the Vite dev proxy and Nginx can reach it.
-    # We do NOT expose 8000 to the public internet directly — that goes via
-    # Nginx reverse proxy (added in a future task).
     ports:
       - "8000:8000"
 
     # ── Environment variables ─────────────────────────────────────────────────
-    # docker-compose automatically reads .env in the same directory.
-    # Each env_file line injects variables into the container's environment.
-    # The `environment:` block can override specific values (useful for CI).
     env_file:
-      - .env
+      - ./backend/.env
 
     environment:
-      # Explicitly set ENVIRONMENT so it's obvious what mode we're in
       ENVIRONMENT: ${ENVIRONMENT:-dev}
 
     # ── Volumes ───────────────────────────────────────────────────────────────
-    # In development, mount the source code so changes are reflected without
-    # rebuilding the image.  In production this volume should be removed so
-    # the container uses the baked-in code (immutable artifact principle).
     volumes:
       - ./backend:/app/backend   # live-reload dev mount
 
     # ── Health check (Compose-level) ─────────────────────────────────────────
-    # Compose waits for this to pass before marking the service "healthy".
-    # Other services can declare `depends_on: backend: condition: service_healthy`.
     healthcheck:
       test: ["CMD", "python", "-c",
              "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
@@ -81,8 +61,6 @@ services:
       start_period: 20s   # Give uvicorn time to boot before first check
 
     # ── Resource limits ───────────────────────────────────────────────────────
-    # The Pi 5 has 8 GB RAM (or 4 GB on the smaller SKU).  Cap the backend at
-    # 512 MB so it doesn't starve the OS or a future Nginx container.
     deploy:
       resources:
         limits:
@@ -91,30 +69,55 @@ services:
           memory: 128M
 
     # ── Logging ───────────────────────────────────────────────────────────────
-    # json-file with rotation keeps the Pi's SD card from filling up.
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  # ── Future services (uncomment as we build them) ──────────────────────────
-  #
-  # nginx:
-  #   image: nginx:alpine
-  #   ports: ["80:80", "443:443"]
-  #   depends_on:
-  #     backend: { condition: service_healthy }
-  #
-  # celery-worker:   # For async AI job queue (Task 6)
-  #   build: ./backend
-  #   command: celery -A backend.worker worker --loglevel=info
-  #   depends_on: [redis]
-  #
-  # redis:           # Message broker for Celery
-  #   image: redis:7-alpine
-  #   ports: ["6379:6379"]
+  # ── React Frontend (Vite Dev Server) ─────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    
+    image: jobifai-frontend:dev
+    container_name: jobifai-frontend
+    restart: unless-stopped
 
-# ── Named volumes (none yet — added when we need persistent local storage) ──
-# volumes:
-#   redis_data:
+    # ── Port mapping ─────────────────────────────────────────────────────────
+    ports:
+      - "5173:5173"
+
+    # ── Environment variables ─────────────────────────────────────────────────
+    environment:
+      # Explicitly tell Vite where the backend lives inside the Docker network
+      - VITE_API_URL=http://backend:8000
+
+    # ── Volumes ───────────────────────────────────────────────────────────────
+    volumes:
+      # Live-reload mount: macOS host -> Container
+      - ./frontend:/app
+      # Critical: Protect container's node_modules from being overwritten by macOS
+      - /app/node_modules
+
+    # ── Startup Order ─────────────────────────────────────────────────────────
+    # Ensure Vite only boots after FastAPI is fully ready to accept connections
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    # ── Resource limits ───────────────────────────────────────────────────────
+    # Vite and Vite's HMR can be memory-hungry during development.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

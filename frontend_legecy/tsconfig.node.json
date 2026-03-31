@@ -1,0 +1,14 @@
+{
+  // This config is used to type-check Vite's config file (vite.config.ts),
+  // which runs in Node.js (not the browser).  Keeping it separate prevents
+  // browser-only types from leaking into Node.js code and vice versa.
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
+}

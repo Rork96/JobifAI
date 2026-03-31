@@ -1,38 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-
-    <!-- Mobile-first viewport: width=device-width prevents iOS from zooming out -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-
-    <!-- Theme colour: browser chrome (address bar) matches our brand on mobile -->
-    <meta name="theme-color" content="#7c3aed" />
-
-    <!-- PWA: allows "Add to Home Screen" on iOS/Android -->
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-
-    <title>JobifAI — AI Career Co-pilot</title>
-    <meta
-      name="description"
-      content="Bypass ATS systems and land more interviews with Mac, your AI-powered resume co-pilot."
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
   </head>
   <body>
-    <!--
-      React mounts into this div.  It starts empty and React fills it in.
-      If JavaScript is disabled, the user sees nothing — we can add a
-      <noscript> fallback message here in a later task.
-    -->
     <div id="root"></div>
-
-    <!--
-      `type="module"` tells the browser this is an ES Module.
-      Vite intercepts this in dev mode and serves HMR-enabled modules.
-      In production, Vite replaces this with the built & hashed bundle path.
-    -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
