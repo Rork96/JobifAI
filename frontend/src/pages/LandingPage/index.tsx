@@ -20,6 +20,7 @@ import DevNav from '@/shared/ui/DevNav';
 import MacMascot, { type MacState } from '@/shared/ui/MacMascot';
 import AtsScoreDial from '@/shared/ui/AtsScoreDial';
 import AuthModal, { type AuthIntent } from '@/shared/ui/AuthModal';
+import { useDocumentStore } from '@/store/useDocumentStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -242,6 +243,14 @@ export default function LandingPage() {
   const [authIntent, setAuthIntent] = useState<AuthIntent>('general');
 
   const openAuth = (intent: AuthIntent) => {
+    // Stash CV/JD in the document store so DashboardPage can persist them
+    // immediately after auth completes (PRD §2.4 soft-gate flow).
+    const store = useDocumentStore.getState();
+    store.setPendingCvFile(cvFile);
+    store.setPendingJdText(jdText);
+    store.setPendingAtsScore(MOCK_SCORE);
+    store.setPendingAtsGaps(MOCK_GAPS);
+
     setAuthIntent(intent);
     setAuthOpen(true);
   };
@@ -304,18 +313,12 @@ export default function LandingPage() {
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <CvDropZone
             file={cvFile}
-            onFile={f => {
-              // TODO Phase 3: useDocumentStore.getState().setPendingCvFile(f)
-              setCvFile(f);
-            }}
+            onFile={f => setCvFile(f)}
             disabled={pageState !== 'idle'}
           />
           <JdTextArea
             value={jdText}
-            onChange={v => {
-              // TODO Phase 3: useDocumentStore.getState().setPendingJdText(v)
-              setJdText(v);
-            }}
+            onChange={v => setJdText(v)}
             disabled={pageState !== 'idle'}
           />
         </section>

@@ -27,18 +27,14 @@
  *   - Replace MacMascot placeholder with useSessionStore.macState
  */
 
+import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
 import MacMascot from '@/shared/ui/MacMascot';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useSessionStore } from '@/store/useSessionStore';
-
-// ── Hardcoded context (Phase 4: replace with useDocumentStore) ────────────────
-
-const MOCK_CV_NAME    = 'resume_2024.pdf';
-const MOCK_JD_SNIPPET = 'Senior TypeScript Engineer @ Acme Corp';
-const MOCK_ATS_SCORE  = 34;
+import { useDocumentStore } from '@/store/useDocumentStore';
 
 // ── Navbar ────────────────────────────────────────────────────────────────────
 
@@ -79,16 +75,34 @@ function Navbar() {
 // ── Context Bar ───────────────────────────────────────────────────────────────
 
 interface ContextBarProps {
-  cvName: string;
-  jdSnippet: string;
-  atsScore: number;
+  cvName:     string | null;
+  jdSnippet:  string | null;
+  atsScore:   number | null;
+  isLoading:  boolean;
 }
 
-function ContextBar({ cvName, jdSnippet, atsScore }: ContextBarProps) {
+function ContextBar({ cvName, jdSnippet, atsScore, isLoading }: ContextBarProps) {
   const scoreColor =
-    atsScore >= 70 ? 'text-green-600' :
-    atsScore >= 40 ? 'text-amber-600' :
+    (atsScore ?? 0) >= 70 ? 'text-green-600' :
+    (atsScore ?? 0) >= 40 ? 'text-amber-600' :
     'text-red-600';
+
+  if (isLoading) {
+    return (
+      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-4 sm:p-5">
+        <div className="flex items-start gap-4">
+          <div className="flex-1 space-y-2.5">
+            <div className="h-3 w-24 rounded bg-slate-200 animate-pulse" />
+            <div className="flex gap-4">
+              <div className="h-4 w-32 rounded bg-slate-200 animate-pulse" />
+              <div className="h-4 w-48 rounded bg-slate-200 animate-pulse" />
+              <div className="h-4 w-16 rounded bg-slate-200 animate-pulse" />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-4 sm:p-5">
@@ -103,7 +117,7 @@ function ContextBar({ cvName, jdSnippet, atsScore }: ContextBarProps) {
             <div className="flex items-center gap-1.5">
               <span className="text-base">📄</span>
               <span className="text-sm font-medium text-slate-700 truncate max-w-[140px]">
-                {cvName}
+                {cvName ?? 'No CV uploaded'}
               </span>
             </div>
             <span className="text-slate-200 hidden sm:block">|</span>
@@ -111,17 +125,21 @@ function ContextBar({ cvName, jdSnippet, atsScore }: ContextBarProps) {
             <div className="flex items-center gap-1.5">
               <span className="text-base">💼</span>
               <span className="text-sm font-medium text-slate-700 truncate max-w-[200px]">
-                {jdSnippet}
+                {jdSnippet ?? 'No job description'}
               </span>
             </div>
             <span className="text-slate-200 hidden sm:block">|</span>
             {/* ATS score badge */}
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-semibold text-slate-400">ATS</span>
-              <span className={`text-sm font-bold tabular-nums ${scoreColor}`}>
-                {atsScore}
-                <span className="text-slate-300 font-normal">/100</span>
-              </span>
+              {atsScore !== null ? (
+                <span className={`text-sm font-bold tabular-nums ${scoreColor}`}>
+                  {atsScore}
+                  <span className="text-slate-300 font-normal">/100</span>
+                </span>
+              ) : (
+                <span className="text-sm font-medium text-slate-400">—</span>
+              )}
             </div>
           </div>
           <button className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700
@@ -286,6 +304,30 @@ function ActionCard({
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const user     = useAuthStore(s => s.user);
+
+  const {
+    pendingCvFile,
+    activeCvFilename,
+    activeJdSnippet,
+    activeResumeId,
+    currentAtsScore,
+    isLoadingResume,
+    persistResume,
+    loadLatestResume,
+  } = useDocumentStore();
+
+  // On mount: if pending CV/JD from landing page soft-gate → persist to DB;
+  // else if no active resume yet → load latest from DB (returning user).
+  useEffect(() => {
+    if (!user) return;
+    if (pendingCvFile !== null) {
+      persistResume(user.id);
+    } else if (activeResumeId === null) {
+      loadLatestResume(user.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   return (
     <div className="h-full overflow-y-auto scrollbar-hidden bg-bg">
@@ -318,9 +360,10 @@ export default function DashboardPage() {
           className="mb-4"
         >
           <ContextBar
-            cvName={MOCK_CV_NAME}
-            jdSnippet={MOCK_JD_SNIPPET}
-            atsScore={MOCK_ATS_SCORE}
+            cvName={activeCvFilename}
+            jdSnippet={activeJdSnippet}
+            atsScore={currentAtsScore}
+            isLoading={isLoadingResume}
           />
         </motion.div>
 

@@ -32,6 +32,9 @@ import OnboardingPage from '@/pages/OnboardingPage';
 // Route guard — three-stage: loading → 401 redirect → missing context
 import ProtectedRoute from '@/app/router/ProtectedRoute';
 
+// Global UI
+import Toaster from '@/shared/ui/Toaster';
+
 // Stores
 import { useAuthStore }     from '@/store/useAuthStore';
 import { useBillingStore }  from '@/store/useBillingStore';
@@ -63,7 +66,10 @@ export default function App() {
   }, []);
 
   return (
-    // <AnimatePresence mode="wait">
+    <>
+    {/* Global toast — rendered outside Routes so it survives navigation */}
+    <Toaster />
+    {/* <AnimatePresence mode="wait"> */}
     <Routes location={location} key={location.pathname}>
 
       {/* ── Public routes ─────────────────────────────────────────────────── */}
@@ -125,6 +131,7 @@ export default function App() {
       <Route path="*" element={<LandingPage />} />
 
     </Routes>
-    // </AnimatePresence>
+    {/* </AnimatePresence> */}
+    </>
   );
 }

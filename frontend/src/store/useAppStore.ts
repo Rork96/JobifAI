@@ -54,22 +54,21 @@ export type {
 // *   AuthSlice      → Who the user is and whether they've paid
 // *   LangSlice      → USER_LANG / RESUME_LANG (the bilingual core feature)
 // *   InterviewSlice → The state machine, chat history, and collected resume data
- *
- * All slices are composed into ONE Zustand store.  Components subscribe to
- * exactly the fields they need:
- *
- *   // Only re-renders when `user` changes — not when messages change
- *   const user = useAppStore(s => s.user);
- *
- * WHY Zustand over React Context / Redux?
- *   • Context re-renders the entire subtree on any state change.
- *     Zustand re-renders ONLY the components that subscribed to the changed field.
- *   • Redux requires actions, reducers, and selectors boilerplate.
- *     Zustand actions are just functions — call them directly, no dispatch.
- *   • Zustand works outside React (useful for calling actions from API handlers
- *     in Task 4 without needing a component reference).
- * ─────────────────────────────────────────────────────────────────────────────
- */
+// *
+// * All slices are composed into ONE Zustand store.  Components subscribe to
+// * exactly the fields they need:
+// *
+// *   // Only re-renders when `user` changes — not when messages change
+// *   const user = useAppStore(s => s.user);
+// *
+// * WHY Zustand over React Context / Redux?
+// *   • Context re-renders the entire subtree on any state change.
+// *     Zustand re-renders ONLY the components that subscribed to the changed field.
+// *   • Redux requires actions, reducers, and selectors boilerplate.
+// *     Zustand actions are just functions — call them directly, no dispatch.
+// *   • Zustand works outside React (useful for calling actions from API handlers
+// *     in Task 4 without needing a component reference).
+// * ─────────────────────────────────────────────────────────────────────────────
 
 import { create, type StateCreator } from 'zustand';
 import { devtools } from 'zustand/middleware';
