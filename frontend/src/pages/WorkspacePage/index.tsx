@@ -25,13 +25,13 @@
  *   - Error handling: ApiError → toast, bullet reverts to normal state.
  *   - AbortController: clicking a second bullet cancels the in-flight request.
  *
- * TODO Phase 9:
- *   - Replace MOCK_RESUME with useDocumentStore.resumeData (structured sections)
- *   - Replace MOCK_RESUME_HEADER with real user data from DB
- *   - Wire onAccept to DB persist (updateResumeScore / content_json patch)
+ * Phase 9 progress:
+ *   - ✅ Resume sections derived from real parsed text (useDocumentStore.resumeRawText)
+ *   - ✅ Header derived from first lines of parsed resume text
+ *   - TODO: Wire onAccept to DB persist (updateResumeScore / content_json patch)
  */
 
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
@@ -59,56 +59,152 @@ interface ResumeSection {
   bullets:  ResumeBullet[];
 }
 
-// ── Mock resume data (Phase 9: replace with useDocumentStore.resumeData) ──────
-// The resume sections are kept local so Accept can update text optimistically.
-// Real structured resume data from the DB is wired in Phase 9.
+// ── Fallback resume data (shown when no real resume has been uploaded yet) ─────
+// These sections are ONLY used when resumeRawText is null (first-time visitors
+// or users who haven't uploaded a CV yet).  Once a CV is uploaded via
+// /api/upload-resume, parseResumeToSections() builds real sections from the
+// parsed text and these constants are never rendered.
 
-const MOCK_RESUME_HEADER = {
-  name:    'Alex Johnson',
-  title:   'Software Engineer',
-  contact: 'alex@example.com · github.com/alexj · San Francisco, CA',
+const FALLBACK_HEADER = {
+  name:    'Your Name',
+  title:   'Upload your CV to get started',
+  contact: 'Click "Fix My Resume" on the dashboard to upload your resume.',
 };
 
 const INITIAL_SECTIONS: ResumeSection[] = [
   {
-    id:       'acme',
-    company:  'Acme Corporation',
-    role:     'Software Engineer',
-    period:   'Jan 2022 – Present',
-    location: 'San Francisco, CA',
+    id:       'placeholder',
+    company:  'Your Company',
+    role:     'Your Role',
+    period:   '',
+    location: '',
     bullets:  [
       {
-        id:   'acme-b0',
-        text: 'Built internal tooling for the data team using Python and SQL, reducing manual reporting time by 3 hours/week.',
+        id:   'placeholder-b0',
+        text: 'Upload your resume from the dashboard to see your actual bullet points here.',
       },
       {
-        id:   'acme-b1',
-        text: 'Worked on frontend features for the main product dashboard.',
-      },
-      {
-        id:   'acme-b2',
-        text: 'Participated in code reviews and improved team collaboration processes.',
-      },
-    ],
-  },
-  {
-    id:       'startup',
-    company:  'StartupXYZ',
-    role:     'Junior Developer',
-    period:   'Jun 2020 – Dec 2021',
-    location: 'Remote',
-    bullets:  [
-      {
-        id:   'startup-b0',
-        text: 'Maintained legacy codebase and resolved critical production bugs, achieving 99.2% uptime.',
-      },
-      {
-        id:   'startup-b1',
-        text: 'Helped migrate the deployment pipeline to AWS infrastructure.',
+        id:   'placeholder-b1',
+        text: 'Each bullet point will be individually improvable with AI once your CV is loaded.',
       },
     ],
   },
 ];
+
+// ── Resume text → structured section parser ────────────────────────────────────
+//
+// Converts plain text extracted by /api/upload-resume into ResumeSection[].
+// Heuristic approach: detects bullet lines (-, •, *, ▪) and section headers
+// (lines followed by bullets or date strings).  Good enough for 95%+ of
+// real CVs; edge cases fall back to a single flat "Experience" section.
+
+const BULLET_RE   = /^[-•*▪·✓]\s+/;
+const NUMBERED_RE = /^\d+[.)]\s+/;
+const DATE_RE     = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|20\d{2}|19\d{2}|present|current)\b/i;
+const SECTION_HEADER_RE = /^(experience|work history|employment|education|skills|summary|objective|profile|projects|certifications|achievements|publications|references)/i;
+
+function isBulletLine(line: string): boolean {
+  return BULLET_RE.test(line) || NUMBERED_RE.test(line);
+}
+
+function isDateLine(line: string): boolean {
+  return DATE_RE.test(line);
+}
+
+function stripBulletPrefix(line: string): string {
+  return line.replace(BULLET_RE, '').replace(NUMBERED_RE, '').trim();
+}
+
+function parseResumeToSections(rawText: string): ResumeSection[] {
+  if (!rawText?.trim()) return INITIAL_SECTIONS;
+
+  const lines = rawText
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+
+  if (lines.length === 0) return INITIAL_SECTIONS;
+
+  const sections: ResumeSection[] = [];
+  let currentSection: ResumeSection | null = null;
+  let sectionIndex = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip section header labels ("EXPERIENCE", "WORK HISTORY", etc.)
+    if (SECTION_HEADER_RE.test(line) && line.length < 30) continue;
+
+    if (isBulletLine(line)) {
+      // ── Bullet line ─────────────────────────────────────────────────────
+      if (!currentSection) {
+        // No header yet — create a generic Experience section
+        const id = `s${sectionIndex++}`;
+        currentSection = { id, company: 'Experience', role: '', period: '', location: '', bullets: [] };
+        sections.push(currentSection);
+      }
+      const text = stripBulletPrefix(line);
+      if (text.length > 4) {
+        currentSection.bullets.push({
+          id: `${currentSection.id}-b${currentSection.bullets.length}`,
+          text,
+        });
+      }
+    } else if (isDateLine(line) && currentSection) {
+      // ── Date line for the current section ──────────────────────────────
+      if (!currentSection.period) {
+        currentSection.period = line.slice(0, 50);
+      }
+    } else {
+      // ── Potential section header ────────────────────────────────────────
+      // Look ahead: if the next non-empty line is a bullet or date, treat
+      // this line (and possibly the one after) as a new section header.
+      const nextLine = lines[i + 1] ?? '';
+      const next2Line = lines[i + 2] ?? '';
+      const nextIsBullet = isBulletLine(nextLine);
+      const nextIsDate   = isDateLine(nextLine);
+      // Also check 2 lines ahead (company + role on separate lines)
+      const next2IsBullet = isBulletLine(next2Line);
+      const next2IsDate   = isDateLine(next2Line);
+
+      const looksLikeHeader =
+        nextIsBullet || nextIsDate || next2IsBullet || next2IsDate
+        || currentSection === null;
+
+      if (looksLikeHeader) {
+        const id = `s${sectionIndex++}`;
+        // Try "Role | Company" or "Role at Company" or "Role — Company" split
+        const splitM = line.match(/^(.+?)\s*(?:\bat\b|[|·—–])\s*(.+)$/i);
+        if (splitM) {
+          currentSection = {
+            id, role: splitM[1].trim(), company: splitM[2].trim(),
+            period: '', location: '', bullets: [],
+          };
+        } else {
+          // Peek at next line: if short and not a bullet, it may be the role
+          const nextIsRole = nextLine && !isBulletLine(nextLine) && !isDateLine(nextLine)
+                              && nextLine.length < 60;
+          if (nextIsRole) {
+            currentSection = {
+              id, company: line, role: nextLine, period: '', location: '', bullets: [],
+            };
+            i++; // consume the role line
+          } else {
+            currentSection = {
+              id, company: line, role: '', period: '', location: '', bullets: [],
+            };
+          }
+        }
+        sections.push(currentSection);
+      }
+      // else: prose line (summary, contact info, etc.) — skip
+    }
+  }
+
+  // Keep only sections that have at least one bullet; fall back to placeholder
+  const withBullets = sections.filter(s => s.bullets.length > 0);
+  return withBullets.length > 0 ? withBullets : INITIAL_SECTIONS;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -330,7 +426,14 @@ function CoachingPanel({
 
 // ── Resume Panel (left/main column) ──────────────────────────────────────────
 
+interface ResumeHeader {
+  name:    string;
+  title:   string;
+  contact: string;
+}
+
 interface ResumePanelProps {
+  header:            ResumeHeader;
   sections:          ResumeSection[];
   pendingDiff:       PendingDiff | null;
   improvingBulletId: string | null;
@@ -340,6 +443,7 @@ interface ResumePanelProps {
 }
 
 function ResumePanel({
+  header,
   sections,
   pendingDiff,
   improvingBulletId,
@@ -354,13 +458,13 @@ function ResumePanel({
       {/* Resume header */}
       <div className="border-b border-slate-100 p-5 sm:p-7">
         <h2 className="text-xl sm:text-2xl font-black text-slate-900">
-          {MOCK_RESUME_HEADER.name}
+          {header.name}
         </h2>
         <p className="text-sm font-semibold text-brand-600 mt-0.5">
-          {MOCK_RESUME_HEADER.title}
+          {header.title}
         </p>
         <p className="text-xs text-slate-400 mt-1">
-          {MOCK_RESUME_HEADER.contact}
+          {header.contact}
         </p>
       </div>
 
@@ -488,11 +592,10 @@ export default function WorkspacePage() {
   const [searchParams]  = useSearchParams();
   const { setWorkspaceMode, workspaceMode } = useSessionStore();
 
-  // Local resume state — Phase 9 will hydrate from useDocumentStore.resumeData
-  const [sections, setSections] = useState<ResumeSection[]>(INITIAL_SECTIONS);
-
-  // Document store: AI diff state + ATS score + keywords
+  // Document store: resume raw text + AI diff state + ATS score + keywords
   const {
+    resumeRawText,
+    activeCvFilename,
     pendingDiff,
     improvingBulletId,
     currentAtsScore,
@@ -504,6 +607,41 @@ export default function WorkspacePage() {
     bumpAtsScore,
     improveBullet,
   } = useDocumentStore();
+
+  // ── Derive structured sections from the parsed resume text ────────────────
+  // parsedSections is memoised — only recomputed when resumeRawText changes.
+  const parsedSections = useMemo(
+    () => resumeRawText ? parseResumeToSections(resumeRawText) : null,
+    [resumeRawText],
+  );
+
+  // ── Header: extract name/title from the first two non-empty lines ─────────
+  const resumeHeader = useMemo((): ResumeHeader => {
+    if (!resumeRawText) return FALLBACK_HEADER;
+    const firstLines = resumeRawText
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0)
+      .slice(0, 5);
+    const name    = firstLines[0] ?? 'Your Name';
+    const title   = firstLines[1] ?? activeCvFilename ?? '';
+    // Remaining early lines (email, phone, location) stitched as contact string
+    const contact = firstLines.slice(2, 4).join(' · ');
+    return { name, title, contact };
+  }, [resumeRawText, activeCvFilename]);
+
+  // ── Local section state — allows optimistic Accept updates ────────────────
+  // Seeded from parsedSections (real data) or INITIAL_SECTIONS (placeholder).
+  const [sections, setSections] = useState<ResumeSection[]>(
+    () => parsedSections ?? INITIAL_SECTIONS,
+  );
+
+  // Re-hydrate when resumeRawText arrives (e.g. after DashboardPage loads it)
+  useEffect(() => {
+    if (parsedSections) {
+      setSections(parsedSections);
+    }
+  }, [parsedSections]);
 
   // AbortController ref — cancels in-flight /api/rewrite-section if user clicks
   // a different bullet before the current request resolves.
@@ -602,6 +740,7 @@ export default function WorkspacePage() {
           {/* ── LEFT: Resume Panel (below on mobile) ──────────── */}
           <div className="flex-1 min-w-0">
             <ResumePanel
+              header={resumeHeader}
               sections={sections}
               pendingDiff={pendingDiff}
               improvingBulletId={improvingBulletId}

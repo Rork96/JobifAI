@@ -414,10 +414,16 @@ async def rewrite_section(
     """
     genai.configure(api_key=settings.gemini_api_key)
 
+    # max_output_tokens=8192: gemini-2.5-flash is a thinking model that consumes
+    # its token budget for internal thoughts BEFORE emitting the JSON response.
+    # The old 512 limit was exhausted entirely by thinking, leaving ~9 tokens for
+    # the actual response (raw='{\n  "new_') — the parser couldn't recover and
+    # fell back to returning old_text.  8192 gives the model ample room for both
+    # the thought trace and the full JSON rewrite.
     _rewrite_gen_config = genai.types.GenerationConfig(
         temperature=0.4,
         top_p=0.95,
-        max_output_tokens=512,
+        max_output_tokens=8192,
         response_mime_type="application/json",  # force clean JSON, no fences, no preamble
     )
     _rewrite_safety = {
@@ -778,9 +784,10 @@ def _recover_json(raw: str) -> dict:
 #   3. gemini-2.5-flash          — last resort: works but has token-budget issues
 #
 _ANALYZE_MODEL_PRIORITY: list[str] = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest",
-    "gemini-2.5-flash",
+    "gemini-2.0-flash",          # non-thinking model → no token-budget fight; works in v1beta
+    "gemini-1.5-flash-latest",   # GA alias, no thinking mode — but returns 404 on some accounts
+    "gemini-1.5-pro-latest",     # slower GA fallback
+    "gemini-2.5-flash",          # last resort: thinking model, needs large max_output_tokens
 ]
 
 

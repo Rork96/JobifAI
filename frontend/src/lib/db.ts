@@ -104,6 +104,8 @@ export async function insertResume(payload: {
   job_description:   string;
   current_ats_score: number | null;
   ats_gaps:          string[];
+  /** Optional structured data to store alongside the resume row (e.g. parsed raw text). */
+  content_json?:     Record<string, unknown>;
 }): Promise<{ data: ResumeRow | null; error: string | null }> {
   const { data, error } = await supabase
     .from('resumes')
@@ -111,7 +113,7 @@ export async function insertResume(payload: {
       user_id:           payload.user_id,
       cv_filename:       payload.cv_filename,
       job_description:   payload.job_description,
-      content_json:      {},
+      content_json:      payload.content_json ?? {},
       current_ats_score: payload.current_ats_score,
       ats_gaps:          payload.ats_gaps,
     })

@@ -31,7 +31,7 @@
 
 import { create } from 'zustand';
 import { insertResume, fetchLatestResume } from '@/lib/db';
-import { improveBullet as apiBulletImprove, ApiError } from '@/lib/api';
+import { improveBullet as apiBulletImprove, uploadResume as apiUploadResume, ApiError } from '@/lib/api';
 import { useToastStore } from '@/store/useToastStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -75,8 +75,12 @@ interface DocumentState {
   atsGaps:         string[];
 
   // ── Live document state ────────────────────────────────────────────────────
-  resumeData:  ResumeData | null;
-  pendingDiff: PendingDiff | null;
+  resumeData:     ResumeData | null;
+  /** Plain text extracted from the uploaded resume file via /api/upload-resume.
+   *  Stored in DB as content_json.raw_text so it survives F5 refresh.
+   *  WorkspacePage derives its section list from this string. */
+  resumeRawText:  string | null;
+  pendingDiff:    PendingDiff | null;
 
   // ── AI improvement state (Phase 8) ────────────────────────────────────────
   /** ID of the bullet currently being AI-rewritten. Null when idle. */
@@ -167,6 +171,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   realAtsScore:         null,
   atsGaps:              [],
   resumeData:           null,
+  resumeRawText:        null,
   pendingDiff:          null,
   improvingBulletId:    null,
   skillGaps:            [],
@@ -188,12 +193,33 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
     set({ isLoadingResume: true });
 
+    // ── Step 1: parse the CV file to plain text ─────────────────────────────
+    // Upload the file to /api/upload-resume BEFORE the DB insert so we can
+    // store the parsed raw text in content_json for workspace hydration.
+    let parsedResumeText: string | null = null;
+    if (pendingCvFile) {
+      try {
+        const uploadResult = await apiUploadResume(pendingCvFile);
+        parsedResumeText = uploadResult.text;
+        console.info(
+          `[useDocumentStore] Resume parsed — ${uploadResult.char_count} chars from ${uploadResult.filename}`,
+        );
+      } catch (uploadErr) {
+        // Non-fatal: workspace falls back to INITIAL_SECTIONS if parsing fails.
+        // The resume row is still created with the JD and metadata.
+        console.warn('[useDocumentStore] /api/upload-resume failed (non-fatal):', uploadErr);
+      }
+    }
+
+    // ── Step 2: persist the resume row to Supabase ───────────────────────────
     const { data, error } = await insertResume({
       user_id:           userId,
       cv_filename:       pendingCvFile?.name ?? null,
       job_description:   pendingJdText,
       current_ats_score: pendingAtsScore,
       ats_gaps:          pendingAtsGaps,
+      // Store parsed text in content_json so it survives F5 refresh
+      content_json:      parsedResumeText ? { raw_text: parsedResumeText } : undefined,
     });
 
     set({ isLoadingResume: false });
@@ -212,6 +238,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       currentAtsScore:      data.current_ats_score,
       realAtsScore:         data.current_ats_score,
       atsGaps:              data.ats_gaps as string[],
+      resumeRawText:        parsedResumeText,
       // Clear pending state — consumed
       pendingCvFile:        null,
       pendingJdText:        '',
@@ -235,6 +262,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
     if (!data) return; // first-time user, no resume yet — show empty state
 
+    // Read back the parsed resume text stored during persistResume
+    const rawText = typeof data.content_json?.raw_text === 'string'
+      ? data.content_json.raw_text as string
+      : null;
+
     set({
       activeResumeId:       data.id,
       activeCvFilename:     data.cv_filename,
@@ -243,6 +275,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       currentAtsScore:      data.current_ats_score,
       realAtsScore:         data.current_ats_score,
       atsGaps:              data.ats_gaps as string[],
+      resumeRawText:        rawText,
     });
   },
 
@@ -345,6 +378,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       realAtsScore:         null,
       atsGaps:              [],
       resumeData:           null,
+      resumeRawText:        null,
       pendingDiff:          null,
       improvingBulletId:    null,
       skillGaps:            [],

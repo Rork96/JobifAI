@@ -146,6 +146,61 @@ export async function improveBullet(
   );
 }
 
+// ── Endpoint: /api/upload-resume ─────────────────────────────────────────────
+
+export interface UploadResumeResponse {
+  text:       string;
+  filename:   string;
+  char_count: number;
+}
+
+/**
+ * Upload a resume file (PDF, DOCX, TXT) and get back extracted plain text.
+ * Used by useDocumentStore.persistResume() to hydrate the workspace with real
+ * resume content instead of falling back to hardcoded mock sections.
+ *
+ * @param file   The File object selected by the user in CvDropZone
+ * @param signal Optional AbortSignal for cancellation
+ */
+export async function uploadResume(
+  file: File,
+  opts?: { signal?: AbortSignal },
+): Promise<UploadResumeResponse> {
+  const token = await getAuthToken();
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/upload-resume`, {
+      method: 'POST',
+      headers,  // NOTE: do NOT set Content-Type — browser sets multipart boundary automatically
+      body: formData,
+      signal: opts?.signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    throw new ApiError(0, (err as Error).message ?? 'Network request failed', '/api/upload-resume');
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json() as { detail?: string };
+      detail = json.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new ApiError(response.status, detail, '/api/upload-resume');
+  }
+
+  return response.json() as Promise<UploadResumeResponse>;
+}
+
 // ── Endpoint: /api/ats-score ──────────────────────────────────────────────────
 
 export interface AtsScoreRequest {
