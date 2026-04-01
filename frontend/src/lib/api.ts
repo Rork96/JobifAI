@@ -226,3 +226,36 @@ export async function getAtsScore(
 ): Promise<AtsScoreResponse> {
   return apiPost<AtsScoreRequest, AtsScoreResponse>('/api/ats-score', req, opts);
 }
+
+// ── Endpoint: /api/coach ──────────────────────────────────────────────────────
+
+export interface ConversationTurn {
+  role:    'user' | 'assistant';
+  content: string;
+}
+
+export interface CoachRequest {
+  message:              string;
+  job_description?:     string;
+  resume_context?:      string;
+  focused_bullet?:      string;
+  conversation_history?: ConversationTurn[];
+}
+
+export interface CoachResponse {
+  response: string;
+}
+
+/**
+ * Send a coaching message to Mac and receive a contextual response.
+ * Uses the current resume + JD + focused bullet as context.
+ *
+ * @param req     Coach message payload
+ * @param signal  Optional AbortSignal for cancellation
+ */
+export async function coachMessage(
+  req: CoachRequest,
+  opts?: { signal?: AbortSignal },
+): Promise<CoachResponse> {
+  return apiPost<CoachRequest, CoachResponse>('/api/coach', req, opts);
+}
