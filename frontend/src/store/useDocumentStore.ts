@@ -85,6 +85,13 @@ interface DocumentState {
   // ── AI improvement state (Phase 8) ────────────────────────────────────────
   /** ID of the bullet currently being AI-rewritten. Null when idle. */
   improvingBulletId: string | null;
+  /**
+   * True for 3 seconds after a rewrite API call fails (non-abort).
+   * Drives the MacMascot into 'warning' state so the user knows something
+   * went wrong without a modal interrupting their flow.
+   * Automatically reset to false at the start of the next improveBullet call.
+   */
+  lastRewriteFailed: boolean;
 
   // ── Analysis state ─────────────────────────────────────────────────────────
   skillGaps:      string[];
@@ -174,6 +181,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   resumeRawText:        null,
   pendingDiff:          null,
   improvingBulletId:    null,
+  lastRewriteFailed:    false,
   skillGaps:            [],
   matchedSkills:        [],
   missingSkills:        [],
@@ -302,8 +310,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       set({ pendingDiff: null });
     }
 
-    // Mark this bullet as loading (shows skeleton in SandwichDiffInline)
-    set({ improvingBulletId: bulletId });
+    // Mark this bullet as loading (shows skeleton in SandwichDiffInline).
+    // Also clear any previous error flag so the mascot returns to processing.
+    set({ improvingBulletId: bulletId, lastRewriteFailed: false });
 
     try {
       const response = await apiBulletImprove(
@@ -340,6 +349,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       } else {
         useToastStore.getState().show('AI rewrite failed unexpectedly.', 'error');
       }
+
+      // Drive mascot into 'warning' state for 3 s, then auto-reset to idle
+      set({ lastRewriteFailed: true });
+      setTimeout(() => set({ lastRewriteFailed: false }), 3000);
 
       console.error('[useDocumentStore] improveBullet error:', err);
     } finally {
@@ -381,6 +394,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       resumeRawText:        null,
       pendingDiff:          null,
       improvingBulletId:    null,
+      lastRewriteFailed:    false,
       skillGaps:            [],
       matchedSkills:        [],
       missingSkills:        [],

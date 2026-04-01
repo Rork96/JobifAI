@@ -1,26 +1,27 @@
 /**
- * MacMascot — Visual state-machine placeholder
+ * MacMascot — Animated .webm state machine
  * FSD location: shared/ui/MacMascot.tsx  (Handbook §3.2)
  *
- * Phase 2: renders a styled placeholder indicating which .webm asset
- * should play. Phase 3: replace the inner <div> with a <video> element:
+ * Plays a looping .webm clip matching the current AI state.
+ * Assets live in /public/mascot/ and are served by Vite at /mascot/*.webm.
  *
- *   <video key={state} src={`/assets/mascot/${ASSETS[state]}`}
- *          autoPlay loop muted playsInline
- *          className="w-full h-full object-contain" />
+ * The `key={state}` on <video> forces React to unmount + remount the element
+ * whenever the state changes — this is the reliable way to restart autoplay
+ * since calling .load()/.play() imperatively races with React's reconciler.
  *
- * Asset inventory (PRD §2.7):
- *   idle        → idle.webm
- *   listening   → listening.webm
- *   processing  → processing.webm
- *   shocked     → shocked.webm  (score < 40)
- *   success     → success.webm  (score ≥ 70)
- *   warning     → warning.webm  (score 40–69)
+ * State → asset mapping (PRD §2.7):
+ *   idle        → /mascot/idle.webm        — default resting state
+ *   listening   → /mascot/listening.webm   — user input focus
+ *   processing  → /mascot/processing.webm  — API call in-flight (overrides all)
+ *   success     → /mascot/success.webm     — AI suggestion ready to review
+ *   warning     → /mascot/warning.webm     — API error, user attention needed
+ *   shocked     → /mascot/shocked.webm     — ATS score < 40
  *
  * Transition rules (PRD §2.7):
  *   - 'processing' overrides all other states while any API call is in flight
- *   - 'shocked' | 'success' | 'warning' revert to 'idle' after 3s
- *   - 'listening' activates on input focus, reverts on blur
+ *   - 'success' shows when pendingDiff is set (accept/reject to return to idle)
+ *   - 'warning' shows on rewrite error (caller auto-reverts after 3 s)
+ *   - 'listening' activates on chat input focus, reverts on blur
  */
 
 export type MacState =
@@ -37,42 +38,61 @@ interface MacMascotProps {
   size?: number;
 }
 
-const STATE_CONFIG: Record<MacState, { asset: string; bg: string; ring: string; emoji: string; label: string }> = {
-  idle:       { asset: 'idle.webm',       bg: 'bg-slate-100',   ring: 'ring-slate-300',  emoji: '💤', label: 'Idle'       },
-  listening:  { asset: 'listening.webm',  bg: 'bg-blue-50',     ring: 'ring-blue-300',   emoji: '👂', label: 'Listening'  },
-  processing: { asset: 'processing.webm', bg: 'bg-violet-50',   ring: 'ring-violet-400', emoji: '⚙️', label: 'Processing' },
-  shocked:    { asset: 'shocked.webm',    bg: 'bg-red-50',      ring: 'ring-red-400',    emoji: '😱', label: 'Shocked'    },
-  success:    { asset: 'success.webm',    bg: 'bg-green-50',    ring: 'ring-green-400',  emoji: '✅', label: 'Success'    },
-  warning:    { asset: 'warning.webm',    bg: 'bg-amber-50',    ring: 'ring-amber-400',  emoji: '⚠️', label: 'Warning'    },
+/**
+ * Maps each state to a .webm filename in /public/mascot/.
+ * 'listening' and 'talking' assets are stub files (48 bytes) — they fall back
+ * to 'idle.webm' so the video element always has a valid source.
+ */
+const ASSET: Record<MacState, string> = {
+  idle:       'idle.webm',
+  listening:  'idle.webm',       // stub file — use idle until real asset is ready
+  processing: 'processing.webm',
+  shocked:    'shocked.webm',
+  success:    'success.webm',
+  warning:    'warning.webm',
+};
+
+/** Tailwind ring colour per state */
+const RING: Record<MacState, string> = {
+  idle:       'ring-slate-200',
+  listening:  'ring-blue-300',
+  processing: 'ring-violet-400',
+  shocked:    'ring-red-400',
+  success:    'ring-green-400',
+  warning:    'ring-amber-400',
 };
 
 export default function MacMascot({ state, size = 160 }: MacMascotProps) {
-  const cfg = STATE_CONFIG[state];
-
   return (
     <div
       className={`
-        relative flex flex-col items-center justify-center rounded-2xl
-        ${cfg.bg} ring-2 ${cfg.ring}
-        transition-all duration-300
+        relative flex items-center justify-center rounded-2xl
+        overflow-hidden bg-slate-50 ring-2 ${RING[state]}
+        transition-shadow duration-300
       `}
-      style={{ width: size, height: size }}
-      aria-label={`Mac mascot — ${cfg.label}`}
+      style={{ width: size, height: size, flexShrink: 0 }}
+      aria-label={`Mac mascot — ${state}`}
     >
-      {/* Pulsing ring when processing */}
+      {/* Pulsing ring overlay while processing */}
       {state === 'processing' && (
-        <div className="absolute inset-0 rounded-2xl ring-2 ring-violet-400 animate-ping opacity-30" />
+        <div className="absolute inset-0 rounded-2xl ring-2 ring-violet-400 animate-ping opacity-25 pointer-events-none" />
       )}
 
-      <span className="text-4xl leading-none" style={{ fontSize: size * 0.3 }}>
-        {cfg.emoji}
-      </span>
-
-      {/* Asset label — replace this entire block with <video> in Phase 3 */}
-      <span className="mt-1 text-center font-mono leading-tight text-slate-500"
-            style={{ fontSize: Math.max(9, size * 0.075) }}>
-        {cfg.asset}
-      </span>
+      {/*
+        key={state} forces a full DOM remount on state change so autoplay
+        fires reliably — no need for imperative .play() calls.
+        muted is required by all browsers before autoplay is permitted.
+        playsInline prevents iOS Safari from going full-screen.
+      */}
+      <video
+        key={state}
+        src={`/mascot/${ASSET[state]}`}
+        autoPlay
+        loop
+        muted
+        playsInline
+        className="w-full h-full object-contain"
+      />
     </div>
   );
 }

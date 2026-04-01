@@ -35,7 +35,7 @@ import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
-import MacMascot from '@/shared/ui/MacMascot';
+import MacMascot, { type MacState } from '@/shared/ui/MacMascot';
 import SandwichDiffInline from '@/shared/ui/SandwichDiffInline';
 import { useSessionStore }  from '@/store/useSessionStore';
 import { useAuthStore }     from '@/store/useAuthStore';
@@ -288,8 +288,9 @@ function WorkspaceNavbar({ mode, atsScore }: { mode: WorkspaceMode; atsScore: nu
 // ── Coaching Panel (right column) ─────────────────────────────────────────────
 
 interface CoachingPanelProps {
-  isImproving:    boolean;
-  hasPendingDiff: boolean;
+  /** Computed mascot state — drives both the video and the "Mac Says" copy */
+  macState:       MacState;
+  macSays:        string;
   diff:           PendingDiff | null;
   atsScore:       number | null;
   missingSkills:  string[];
@@ -298,14 +299,16 @@ interface CoachingPanelProps {
 }
 
 function CoachingPanel({
-  isImproving,
-  hasPendingDiff,
+  macState,
+  macSays,
   diff,
   atsScore,
   missingSkills,
   matchedSkills,
   atsGaps,
 }: CoachingPanelProps) {
+  const hasPendingDiff = diff !== null;
+
   // Derive missing keywords: prefer structured missingSkills, fall back to atsGaps
   const displayMissing: string[] = missingSkills.length > 0
     ? missingSkills
@@ -316,18 +319,6 @@ function CoachingPanel({
           return m ? m[1] : g;
         })
         .slice(0, 5);
-
-  const macState: 'idle' | 'processing' | 'warning' =
-    isImproving    ? 'processing' :
-    hasPendingDiff ? 'warning'    :
-    'idle';
-
-  const macSays =
-    isImproving
-      ? 'Analysing your bullet against the job description…'
-      : hasPendingDiff && diff
-        ? `Review the AI suggestion below. Accepting will add +${diff.scoreImpact} ATS pts.`
-        : 'Click any bullet to get an instant AI rewrite suggestion.';
 
   return (
     <aside className="flex flex-col gap-4">
@@ -432,12 +423,20 @@ interface ResumeHeader {
   contact: string;
 }
 
+/** Minimum text length (chars) for a bullet to be AI-improvable */
+const MIN_BULLET_LENGTH = 10;
+
 interface ResumePanelProps {
   header:            ResumeHeader;
   sections:          ResumeSection[];
+  /** True while loadLatestResume / persistResume is in progress */
+  isLoading:         boolean;
+  /** True when real resume text has been parsed — shows sections, not empty state */
+  hasResume:         boolean;
   pendingDiff:       PendingDiff | null;
   improvingBulletId: string | null;
   onBulletClick:     (bullet: ResumeBullet, section: ResumeSection) => void;
+  onUploadCta:       () => void;
   onAccept:          () => void;
   onReject:          () => void;
 }
@@ -445,9 +444,12 @@ interface ResumePanelProps {
 function ResumePanel({
   header,
   sections,
+  isLoading,
+  hasResume,
   pendingDiff,
   improvingBulletId,
   onBulletClick,
+  onUploadCta,
   onAccept,
   onReject,
 }: ResumePanelProps) {
@@ -470,6 +472,48 @@ function ResumePanel({
 
       {/* Experience sections */}
       <div className="p-5 sm:p-7 space-y-7">
+
+        {/* ── Loading skeleton ─────────────────────────────────────────── */}
+        {isLoading && (
+          <div className="space-y-4 animate-pulse">
+            <div className="h-3 w-24 rounded bg-slate-200" />
+            {[0, 1, 2].map(i => (
+              <div key={i} className="space-y-2">
+                <div className="h-3.5 w-48 rounded bg-slate-200" />
+                <div className="h-3 w-full rounded bg-slate-100" />
+                <div className="h-3 w-5/6 rounded bg-slate-100" />
+                <div className="h-3 w-4/6 rounded bg-slate-100" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Empty state — no resume uploaded yet ─────────────────────── */}
+        {!isLoading && !hasResume && (
+          <div className="flex flex-col items-center justify-center py-16 text-center gap-4">
+            <div className="text-5xl">📄</div>
+            <div>
+              <p className="text-base font-bold text-slate-800">No resume loaded</p>
+              <p className="text-sm text-slate-500 mt-1 max-w-xs">
+                Upload your CV from the Dashboard so Mac can start improving your
+                bullets with AI.
+              </p>
+            </div>
+            <button
+              onClick={onUploadCta}
+              className="mt-2 inline-flex items-center gap-2 px-5 py-2.5
+                         rounded-xl bg-brand-600 hover:bg-brand-700
+                         text-white text-sm font-bold transition-colors
+                         active:scale-[0.97]"
+            >
+              ← Go to Dashboard to Upload
+            </button>
+          </div>
+        )}
+
+        {/* ── Real sections ─────────────────────────────────────────────── */}
+        {!isLoading && hasResume && (
+        <>
         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest -mb-3">
           Experience
         </p>
@@ -506,22 +550,32 @@ function ResumePanel({
                   // Show amber highlight when: has a diff for this bullet OR is being improved
                   const isHighlighted = isTargeted || isImproving;
 
+                  // A bullet is improvable if the resume is real AND text is long enough
+                  const isImprovable = bullet.text.trim().length >= MIN_BULLET_LENGTH;
+
                   return (
                     <li key={bullet.id}>
                       {/* Middle layer: original bullet */}
                       <div
                         role="button"
-                        tabIndex={0}
+                        tabIndex={isImprovable ? 0 : -1}
                         onClick={() => onBulletClick(bullet, section)}
                         onKeyDown={e => e.key === 'Enter' && onBulletClick(bullet, section)}
-                        aria-label={`Improve bullet: ${bullet.text.slice(0, 40)}…`}
+                        aria-label={
+                          isImprovable
+                            ? `Improve bullet: ${bullet.text.slice(0, 40)}…`
+                            : 'Bullet too short to improve'
+                        }
+                        aria-disabled={!isImprovable}
                         className={`
                           flex items-start gap-2 text-sm leading-relaxed
                           transition-all duration-300 rounded-lg
                           ${isDimmed ? 'opacity-40' : ''}
                           ${isHighlighted
                             ? 'bg-amber-50 border border-amber-200 px-3 py-2 -mx-3 cursor-default'
-                            : 'px-0 py-0.5 cursor-pointer hover:bg-slate-50 hover:rounded-lg hover:-mx-2 hover:px-2'}
+                            : isImprovable
+                              ? 'px-0 py-0.5 cursor-pointer hover:bg-slate-50 hover:rounded-lg hover:-mx-2 hover:px-2'
+                              : 'px-0 py-0.5 cursor-not-allowed opacity-50'}
                         `}
                       >
                         <span className={`mt-1.5 flex-shrink-0 w-1.5 h-1.5 rounded-full
@@ -577,6 +631,9 @@ function ResumePanel({
             👆 Click any bullet to get an instant AI improvement
           </p>
         )}
+        </>
+        )} {/* end hasResume */}
+
       </div>
     </div>
   );
@@ -596,8 +653,10 @@ export default function WorkspacePage() {
   const {
     resumeRawText,
     activeCvFilename,
+    isLoadingResume,
     pendingDiff,
     improvingBulletId,
+    lastRewriteFailed,
     currentAtsScore,
     missingSkills,
     matchedSkills,
@@ -607,6 +666,8 @@ export default function WorkspacePage() {
     bumpAtsScore,
     improveBullet,
   } = useDocumentStore();
+
+  const navigate = useNavigate();
 
   // ── Derive structured sections from the parsed resume text ────────────────
   // parsedSections is memoised — only recomputed when resumeRawText changes.
@@ -655,10 +716,37 @@ export default function WorkspacePage() {
 
   const mode = workspaceMode ?? 'resume';
 
+  // ── Mascot state machine (PRD §2.7) ─────────────────────────────────────
+  // Priority order: processing > warning > success > idle.
+  // 'success' maps to a pending diff ready for review.
+  // 'warning' fires for 3 s on API error (auto-reset handled by the store).
+  const macState: MacState =
+    improvingBulletId !== null ? 'processing' :
+    lastRewriteFailed          ? 'warning'    :
+    pendingDiff !== null       ? 'success'    :
+    'idle';
+
+  const macSays: string =
+    !resumeRawText && !isLoadingResume
+      ? 'Upload your resume from the Dashboard to start improving your bullets with AI.'
+      : improvingBulletId !== null
+        ? 'Analysing your bullet against the job description…'
+        : lastRewriteFailed
+          ? 'Something went wrong. Try clicking a different bullet, or check your connection.'
+          : pendingDiff !== null
+            ? `Review the AI suggestion below. Accepting will add +${pendingDiff.scoreImpact} ATS pts.`
+            : 'Click any bullet point to get an instant AI rewrite suggestion.';
+
   // ── Bullet click handler ─────────────────────────────────────────────────
 
   const handleBulletClick = useCallback((bullet: ResumeBullet, _section: ResumeSection) => {
-    // Do nothing if this bullet is already being improved or already has a diff
+    // Guard 1: no real resume loaded — clicking placeholders wastes API tokens
+    if (!resumeRawText) return;
+
+    // Guard 2: bullet text is empty or too short to improve
+    if (!bullet.text || bullet.text.trim().length < 10) return;
+
+    // Guard 3: this bullet is already being improved or already has a pending diff
     if (bullet.id === improvingBulletId) return;
     if (pendingDiff?.fieldPath === bullet.id) return;
 
@@ -668,7 +756,7 @@ export default function WorkspacePage() {
 
     const resumeContext = buildResumeContext(sections, bullet.id);
     void improveBullet(bullet.id, bullet.text, resumeContext, abortRef.current.signal);
-  }, [improvingBulletId, pendingDiff, sections, improveBullet]);
+  }, [resumeRawText, improvingBulletId, pendingDiff, sections, improveBullet]);
 
   // ── Accept handler ───────────────────────────────────────────────────────
 
@@ -726,8 +814,8 @@ export default function WorkspacePage() {
           <div className="w-full md:w-72 lg:w-80 md:flex-shrink-0">
             <div className="md:sticky md:top-24">
               <CoachingPanel
-                isImproving={improvingBulletId !== null}
-                hasPendingDiff={pendingDiff !== null}
+                macState={macState}
+                macSays={macSays}
                 diff={pendingDiff}
                 atsScore={currentAtsScore}
                 missingSkills={missingSkills}
@@ -742,9 +830,12 @@ export default function WorkspacePage() {
             <ResumePanel
               header={resumeHeader}
               sections={sections}
+              isLoading={isLoadingResume}
+              hasResume={resumeRawText !== null}
               pendingDiff={pendingDiff}
               improvingBulletId={improvingBulletId}
               onBulletClick={handleBulletClick}
+              onUploadCta={() => navigate('/dashboard')}
               onAccept={handleAccept}
               onReject={handleReject}
             />
