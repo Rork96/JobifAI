@@ -75,13 +75,14 @@ function Navbar() {
 // ── Context Bar ───────────────────────────────────────────────────────────────
 
 interface ContextBarProps {
-  cvName:     string | null;
-  jdSnippet:  string | null;
-  atsScore:   number | null;
-  isLoading:  boolean;
+  cvName:             string | null;
+  jdSnippet:          string | null;
+  atsScore:           number | null;
+  isLoading:          boolean;
+  onChangeDocuments:  () => void;
 }
 
-function ContextBar({ cvName, jdSnippet, atsScore, isLoading }: ContextBarProps) {
+function ContextBar({ cvName, jdSnippet, atsScore, isLoading, onChangeDocuments }: ContextBarProps) {
   const scoreColor =
     (atsScore ?? 0) >= 70 ? 'text-green-600' :
     (atsScore ?? 0) >= 40 ? 'text-amber-600' :
@@ -142,8 +143,11 @@ function ContextBar({ cvName, jdSnippet, atsScore, isLoading }: ContextBarProps)
               )}
             </div>
           </div>
-          <button className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700
-                             hover:underline transition-colors">
+          <button
+            onClick={onChangeDocuments}
+            className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700
+                       hover:underline transition-colors"
+          >
             Change Documents
           </button>
         </div>
@@ -316,6 +320,7 @@ export default function DashboardPage() {
     persistResume,
     loadLatestResume,
     uploadResumeFile,
+    clearDocument,
   } = useDocumentStore();
 
   // Hidden file input for "Fix My Resume" direct upload
@@ -402,6 +407,10 @@ export default function DashboardPage() {
             jdSnippet={activeJdSnippet}
             atsScore={currentAtsScore}
             isLoading={isLoadingResume}
+            onChangeDocuments={() => {
+              clearDocument();
+              fileInputRef.current?.click();
+            }}
           />
         </motion.div>
 
