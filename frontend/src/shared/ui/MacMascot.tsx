@@ -64,25 +64,29 @@ const RING: Record<MacState, string> = {
 
 export default function MacMascot({ state, size = 160 }: MacMascotProps) {
   return (
+    /*
+     * Outer container: sized exactly, overflow-hidden so nothing bleeds out,
+     * no flex-centering (the video fills the space via absolute inset-0).
+     * flex-shrink-0 prevents a flex parent from squashing the mascot.
+     */
     <div
-      className={`
-        relative flex items-center justify-center rounded-2xl
-        overflow-hidden bg-slate-50 ring-2 ${RING[state]}
-        transition-shadow duration-300
-      `}
-      style={{ width: size, height: size, flexShrink: 0 }}
+      className={`relative overflow-hidden rounded-2xl ring-2 ${RING[state]} flex-shrink-0`}
+      style={{ width: size, height: size }}
       aria-label={`Mac mascot — ${state}`}
     >
-      {/* Pulsing ring overlay while processing */}
+      {/* Pulsing ring overlay while processing — pointer-events-none so it doesn't block clicks */}
       {state === 'processing' && (
-        <div className="absolute inset-0 rounded-2xl ring-2 ring-violet-400 animate-ping opacity-25 pointer-events-none" />
+        <div className="absolute inset-0 rounded-2xl ring-2 ring-violet-400 animate-ping opacity-25 pointer-events-none z-10" />
       )}
 
       {/*
         key={state} forces a full DOM remount on state change so autoplay
-        fires reliably — no need for imperative .play() calls.
+        fires reliably without needing imperative .load()/.play() calls.
+        absolute inset-0 + w-full h-full: the video element fills the container
+        at exactly the right pixel size regardless of its natural aspect ratio.
+        object-contain: letterboxes rather than clips — mascot is never cut off.
         muted is required by all browsers before autoplay is permitted.
-        playsInline prevents iOS Safari from going full-screen.
+        playsInline prevents iOS Safari from entering full-screen.
       */}
       <video
         key={state}
@@ -91,7 +95,7 @@ export default function MacMascot({ state, size = 160 }: MacMascotProps) {
         loop
         muted
         playsInline
-        className="w-full h-full object-contain"
+        className="absolute inset-0 w-full h-full object-contain"
       />
     </div>
   );

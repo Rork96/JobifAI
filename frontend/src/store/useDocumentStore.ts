@@ -117,8 +117,22 @@ interface DocumentState {
   /**
    * SELECT the user's most recent resume row from Supabase.
    * Called by DashboardPage on mount when pendingCvFile is null (returning visit).
+   * Also called by WorkspacePage on mount after a page refresh to re-hydrate the store.
    */
   loadLatestResume: (userId: string) => Promise<void>;
+
+  /**
+   * Upload a CV file directly (used by the Dashboard "Fix My Resume" button).
+   *
+   * Flow:
+   *   1. POST /api/upload-resume → parsed plain text
+   *   2. INSERT resumes row with content_json: { raw_text }
+   *   3. Sets activeResumeId + resumeRawText in store
+   *
+   * Returns true on success, false on any error (error toast shown internally).
+   * The caller navigates to /workspace on true.
+   */
+  uploadResumeFile: (file: File, userId: string) => Promise<boolean>;
 
   updateResumeData: (data: ResumeData) => void;
 
@@ -285,6 +299,66 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       atsGaps:              data.ats_gaps as string[],
       resumeRawText:        rawText,
     });
+  },
+
+  // ── Direct upload (Dashboard "Fix My Resume" button) ─────────────────────
+
+  uploadResumeFile: async (file, userId) => {
+    set({ isLoadingResume: true });
+
+    // Step 1: parse the file via /api/upload-resume
+    let parsedText: string;
+    try {
+      const result = await apiUploadResume(file);
+      parsedText = result.text;
+    } catch (err: unknown) {
+      set({ isLoadingResume: false });
+      const msg =
+        err instanceof ApiError
+          ? `Could not parse CV: ${err.detail}`
+          : 'Could not parse your CV. Try a PDF or DOCX file.';
+      useToastStore.getState().show(msg, 'error');
+      return false;
+    }
+
+    // Step 2: insert resume row — carry over any existing JD if present
+    const { activeJobDescription, pendingJdText } = get();
+    const jd = activeJobDescription ?? pendingJdText ?? '';
+
+    const { data, error } = await insertResume({
+      user_id:           userId,
+      cv_filename:       file.name,
+      job_description:   jd,
+      current_ats_score: null,
+      ats_gaps:          [],
+      content_json:      { raw_text: parsedText },
+    });
+
+    set({ isLoadingResume: false });
+
+    if (error || !data) {
+      useToastStore.getState().show('Could not save your resume. Please try again.', 'error');
+      return false;
+    }
+
+    // Step 3: hydrate store with the new resume
+    set({
+      activeResumeId:       data.id,
+      activeCvFilename:     data.cv_filename,
+      activeJdSnippet:      data.job_description?.slice(0, 60) ?? null,
+      activeJobDescription: data.job_description ?? null,
+      currentAtsScore:      null,
+      realAtsScore:         null,
+      atsGaps:              [],
+      resumeRawText:        parsedText,
+      // Clear any stale pending state from the landing page flow
+      pendingCvFile:        null,
+      pendingJdText:        '',
+      pendingAtsScore:      null,
+      pendingAtsGaps:       [],
+    });
+
+    return true;
   },
 
   updateResumeData: (data) => set({ resumeData: data }),

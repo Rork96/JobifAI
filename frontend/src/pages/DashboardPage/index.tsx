@@ -27,7 +27,7 @@
  *   - Replace MacMascot placeholder with useSessionStore.macState
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import DevNav from '@/shared/ui/DevNav';
@@ -315,22 +315,60 @@ export default function DashboardPage() {
     isLoadingResume,
     persistResume,
     loadLatestResume,
+    uploadResumeFile,
   } = useDocumentStore();
+
+  // Hidden file input for "Fix My Resume" direct upload
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   // On mount: if pending CV/JD from landing page soft-gate → persist to DB;
   // else if no active resume yet → load latest from DB (returning user).
   useEffect(() => {
     if (!user) return;
     if (pendingCvFile !== null) {
-      persistResume(user.id);
+      persistResume(user.id).then(() => navigate('/workspace?mode=resume'));
     } else if (activeResumeId === null) {
       loadLatestResume(user.id);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  /**
+   * Handles file selected from the hidden <input type="file">.
+   * Uploads the file, persists to DB, then navigates to workspace.
+   */
+  const handleResumeFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    // Reset the input so selecting the same file again fires onChange
+    e.target.value = '';
+
+    setIsUploading(true);
+    const ok = await uploadResumeFile(file, user.id);
+    setIsUploading(false);
+
+    if (ok) {
+      navigate('/workspace?mode=resume');
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto scrollbar-hidden bg-bg">
+      {/*
+        Hidden file input — triggered by "Fix My Resume" card onClick.
+        accept limits the OS file picker to supported formats.
+        No UI is rendered; we control it imperatively via the ref.
+      */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.docx,.txt"
+        className="hidden"
+        onChange={handleResumeFileSelected}
+      />
+
       <DevNav />
       <Navbar />
 
@@ -383,11 +421,23 @@ export default function DashboardPage() {
           <ActionCard
             icon="🔧"
             title="Fix My Resume"
-            description="AI rewrites every bullet point to match the job description and pass ATS keyword filters."
-            cta="Start Fixing"
+            description={
+              isUploading || isLoadingResume
+                ? 'Parsing your CV…'
+                : 'Upload your CV and AI rewrites every bullet point to pass ATS keyword filters.'
+            }
+            cta={isUploading || isLoadingResume ? '⏳ Uploading…' : 'Upload CV & Start'}
             variant="available"
             quotaLabel="3 free rewrites"
-            onClick={() => navigate('/workspace?mode=resume')}
+            onClick={() => {
+              // If we already have an active resume, go straight to workspace.
+              // Otherwise open the file picker so the user uploads their CV first.
+              if (activeResumeId && !isUploading) {
+                navigate('/workspace?mode=resume');
+              } else if (!isUploading) {
+                fileInputRef.current?.click();
+              }
+            }}
             delay={0.15}
           />
           <ActionCard
