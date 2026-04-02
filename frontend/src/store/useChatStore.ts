@@ -30,6 +30,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  /**
+   * Phase 3 — Dialogue binding.
+   * ID of the EditableBullet this message was sent against.
+   * Undefined only for legacy/system messages that predate Phase 3.
+   * Guarantees the conversation history is always traceable to a specific
+   * resume bullet and prevents unanchored AI suggestions.
+   */
+  bulletId?: string;
   /** True while this message is still streaming (partial content). */
   isStreaming?: boolean;
 }

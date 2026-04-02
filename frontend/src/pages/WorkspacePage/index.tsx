@@ -1326,14 +1326,38 @@ export default function WorkspacePage() {
     void improveBullet(target.id, target.text, ctxWithKw, abortRef.current.signal);
   }, [activeBullet, sections, improveBullet]);
 
-  // ── Chat message ───────────────────────────────────────────────────────────
+  // ── Chat message — Phase 3: Dialogue Flow ─────────────────────────────────
+  // Every message is strictly bound to activeBulletId at the time of sending.
+  // If no bullet is selected (e.g. ChatInput guard bypassed programmatically),
+  // the handler rejects the message and prompts the user — no AI call is made.
+  // This is a second line of defence; the primary gate is ChatInput's disabled
+  // state from Phase 2.
   const handleSendMessage = useCallback(async (text: string) => {
+    // ── Hard guard: no target = no message ───────────────────────────────────
+    if (!activeBulletId) {
+      addMessage({
+        id: `sys-${Date.now()}`,
+        role: 'assistant',
+        content: 'Please select a bullet to improve first — click any Summary or Experience bullet.',
+        timestamp: new Date(),
+      });
+      return;
+    }
+
+    // Snapshot the bound bullet ID at submission time.
+    // Even if the user clicks elsewhere while the request is in flight,
+    // the response message will still be tagged to the correct bullet.
+    const boundId   = activeBulletId;
+    const boundText = activeBullet?.text ?? '';
+
     addMessage({
-      id: `u-${Date.now()}`,
-      role: 'user',
-      content: text,
+      id:        `u-${Date.now()}`,
+      role:      'user',
+      content:   text,
       timestamp: new Date(),
+      bulletId:  boundId,
     });
+
     setIsGenerating(true);
     chatAbortRef.current?.abort();
     chatAbortRef.current = new AbortController();
@@ -1343,33 +1367,36 @@ export default function WorkspacePage() {
         {
           message:         text,
           job_description: activeJobDescription ?? '',
-          resume_context:  buildResumeContext(sections, activeBullet?.id ?? ''),
-          focused_bullet:  activeBullet?.text ?? '',
+          resume_context:  buildResumeContext(sections, boundId),
+          focused_bullet:  boundText,
           conversation_history: messages.slice(-8).map(m => ({
-            role: m.role as 'user' | 'assistant',
+            role:    m.role as 'user' | 'assistant',
             content: m.content,
           })),
         },
         { signal: chatAbortRef.current.signal },
       );
+
       addMessage({
-        id: `a-${Date.now()}`,
-        role: 'assistant',
-        content: result.response,
+        id:        `a-${Date.now()}`,
+        role:      'assistant',
+        content:   result.response,
         timestamp: new Date(),
+        bulletId:  boundId,
       });
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       addMessage({
-        id: `err-${Date.now()}`,
-        role: 'assistant',
-        content: 'Connection error. Click any bullet for an AI rewrite, or try again.',
+        id:        `err-${Date.now()}`,
+        role:      'assistant',
+        content:   'Connection error — check your network and try again.',
         timestamp: new Date(),
+        bulletId:  boundId,
       });
     } finally {
       setIsGenerating(false);
     }
-  }, [addMessage, setIsGenerating, activeJobDescription, sections, activeBullet, messages]);
+  }, [activeBulletId, activeBullet, addMessage, setIsGenerating, activeJobDescription, sections, messages]);
 
   useEffect(() => () => {
     abortRef.current?.abort();
