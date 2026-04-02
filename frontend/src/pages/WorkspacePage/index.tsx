@@ -268,12 +268,14 @@ interface ChatInputProps {
   onSend:          (text: string) => void;
   isGenerating:    boolean;
   onFocusChange:   (focused: boolean) => void;
+  /** Phase 2: must be true for the input to be active. False = no bullet selected. */
+  hasTarget:       boolean;
   placeholder?:    string;
   compact?:        boolean;
 }
 
 function ChatInput({
-  onSend, isGenerating, onFocusChange,
+  onSend, isGenerating, onFocusChange, hasTarget,
   placeholder = 'Ask Mac for coaching…', compact = false,
 }: ChatInputProps) {
   const [value, setValue] = useState('');
@@ -303,11 +305,11 @@ function ChatInput({
     if (isListening) stopListening();
 
     const trimmed = value.trim();
-    if (!trimmed || isGenerating) return;
+    if (!trimmed || isGenerating || !hasTarget) return;
     onSend(trimmed);
     setValue('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [value, isGenerating, isListening, stopListening, onSend]);
+  }, [value, isGenerating, hasTarget, isListening, stopListening, onSend]);
 
   // Auto-grow textarea
   useEffect(() => {
@@ -346,14 +348,16 @@ function ChatInput({
             }
           }}
           placeholder={
-            isListening
-              ? (interimText || 'Listening…')
-              : isGenerating
-                ? 'Mac is thinking…'
-                : placeholder
+            !hasTarget
+              ? 'Select a bullet above first…'
+              : isListening
+                ? (interimText || 'Listening…')
+                : isGenerating
+                  ? 'Mac is thinking…'
+                  : placeholder
           }
           rows={1}
-          disabled={isGenerating}
+          disabled={isGenerating || !hasTarget}
           className="flex-1 bg-transparent resize-none text-sm text-slate-700
                      placeholder-slate-400 focus:outline-none disabled:opacity-60"
           style={{ maxHeight: 96, overflowY: 'auto' }}
@@ -364,7 +368,7 @@ function ChatInput({
           <button
             type="button"
             title={micTitle}
-            disabled={permissionDenied || isGenerating}
+            disabled={permissionDenied || isGenerating || !hasTarget}
             onClick={() => isListening ? stopListening() : startListening()}
             className={`flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
                         transition-all active:scale-95
@@ -385,7 +389,7 @@ function ChatInput({
         <button
           type="button"
           onClick={handleSend}
-          disabled={!value.trim() || isGenerating}
+          disabled={!value.trim() || isGenerating || !hasTarget}
           aria-label="Send message"
           className="flex-shrink-0 w-7 h-7 rounded-lg bg-brand-600 hover:bg-brand-700
                      active:scale-95 flex items-center justify-center text-white
@@ -552,9 +556,12 @@ interface CoachingPanelProps {
   atsGaps:           string[];
   messages:          ChatMessage[];
   chatIsGenerating:  boolean;
+  /** True when the user has selected an EditableBullet — gates ChatInput */
+  hasTarget:         boolean;
   onSendMessage:     (text: string) => void;
   onChatFocusChange: (focused: boolean) => void;
   onKeywordClick:    (keyword: string) => void;
+  /** Full bullet object for keyword label context (may be null if no target) */
   focusedBullet:     ResumeBullet | null;
 }
 
@@ -565,7 +572,7 @@ interface CoachingPanelProps {
 function CoachingPanel({
   macState, macSays, atsScore, liveScore, diff,
   missingSkills, matchedSkills, atsGaps,
-  messages, chatIsGenerating, onSendMessage, onChatFocusChange,
+  messages, chatIsGenerating, hasTarget, onSendMessage, onChatFocusChange,
   onKeywordClick, focusedBullet,
 }: CoachingPanelProps) {
 
@@ -690,6 +697,7 @@ function CoachingPanel({
       <ChatInput
         onSend={onSendMessage}
         isGenerating={chatIsGenerating}
+        hasTarget={hasTarget}
         onFocusChange={onChatFocusChange}
       />
     </div>
@@ -717,7 +725,7 @@ function MobileBottomSheet(props: CoachingPanelProps) {
   const {
     macState, macSays, atsScore, liveScore, diff,
     missingSkills, atsGaps,
-    messages, chatIsGenerating, onSendMessage, onChatFocusChange,
+    messages, chatIsGenerating, hasTarget, onSendMessage, onChatFocusChange,
     onKeywordClick, focusedBullet,
   } = props;
 
@@ -887,6 +895,7 @@ function MobileBottomSheet(props: CoachingPanelProps) {
         <ChatInput
           onSend={onSendMessage}
           isGenerating={chatIsGenerating}
+          hasTarget={hasTarget}
           onFocusChange={onChatFocusChange}
           compact
         />
@@ -904,7 +913,8 @@ interface ResumePanelProps {
   sections:          ResumeSection[];
   pendingDiff:       PendingDiff | null;
   improvingBulletId: string | null;
-  focusedBullet:     ResumeBullet | null;
+  /** Store-owned ID of the active target bullet. Null = no target acquired. */
+  activeBulletId:    string | null;
   onBulletClick:     (b: ResumeBullet, s: ResumeSection) => void;
   onAccept:          () => void;
   onReject:          () => void;
@@ -912,7 +922,7 @@ interface ResumePanelProps {
 
 function ResumePanel({
   header, sections,
-  pendingDiff, improvingBulletId, focusedBullet,
+  pendingDiff, improvingBulletId, activeBulletId,
   onBulletClick, onAccept, onReject,
 }: ResumePanelProps) {
   const hasDiff = pendingDiff !== null;
@@ -973,7 +983,7 @@ function ResumePanel({
                   // ── Interactive sections: Summary + Experience ────────────────
                   const isImproving   = bullet.id === improvingBulletId;
                   const isTargeted    = hasDiff && bullet.id === pendingDiff?.fieldPath;
-                  const isFocused     = focusedBullet?.id === bullet.id && !isTargeted && !isImproving;
+                  const isFocused     = activeBulletId === bullet.id && !isTargeted && !isImproving;
                   const isDimmed      = (hasDiff || improvingBulletId !== null)
                                           && !isTargeted && !isImproving && sectionHasDiff;
                   const isHighlighted = isTargeted || isImproving;
@@ -991,7 +1001,7 @@ function ResumePanel({
                       <div
                         role="button"
                         tabIndex={isImprovable ? 0 : -1}
-                        onClick={() => onBulletClick(bullet, section)}
+                        onClick={(e) => { e.stopPropagation(); onBulletClick(bullet, section); }}
                         onKeyDown={e => e.key === 'Enter' && onBulletClick(bullet, section)}
                         aria-label={isImprovable ? `Improve: ${bullet.text.slice(0, 60)}` : undefined}
                         aria-disabled={!isImprovable}
@@ -1131,6 +1141,8 @@ export default function WorkspacePage() {
     activeJobDescription,
     isLoadingResume,
     pendingDiff,
+    activeBulletId,
+    setActiveBulletId,
     improvingBulletId,
     lastRewriteFailed,
     currentAtsScore,
@@ -1152,7 +1164,6 @@ export default function WorkspacePage() {
 
   // ── Local state ────────────────────────────────────────────────────────────
   const [isChatFocused, setIsChatFocused] = useState(false);
-  const [focusedBullet, setFocusedBullet] = useState<ResumeBullet | null>(null);
   const [attempted,     setAttempted]     = useState(false);
 
   // ── Refresh hydration ──────────────────────────────────────────────────────
@@ -1200,6 +1211,18 @@ export default function WorkspacePage() {
     if (parsedSections && parsedSections.length > 0) setSections(parsedSections);
   }, [parsedSections]);
 
+  // ── Active bullet — resolved from store ID against local section state ─────
+  // activeBulletId lives in the store (survives panel re-mounts).
+  // activeBullet is the full ResumeBullet object, used for display + context.
+  const activeBullet: ResumeBullet | null = useMemo(() => {
+    if (!activeBulletId) return null;
+    for (const s of sections) {
+      const found = s.bullets.find(b => b.id === activeBulletId);
+      if (found) return found;
+    }
+    return null;
+  }, [activeBulletId, sections]);
+
   // ── Live client-side ATS score ─────────────────────────────────────────────
   // Used when backend score hasn't been computed yet.
   const liveAtsScore = useMemo(() => {
@@ -1242,36 +1265,27 @@ export default function WorkspacePage() {
             ? 'Something went wrong. Try a different bullet or check your connection.'
             : pendingDiff !== null
               ? `Accept to add +${pendingDiff.scoreImpact} ATS points. Reject to try again.`
-              : focusedBullet !== null
-                ? `"${focusedBullet.text.slice(0, 60)}…" is selected — click a keyword chip to inject it.`
+              : activeBullet !== null
+                ? `"${activeBullet.text.slice(0, 60)}…" is selected — type your instruction below.`
                 : sections.length > 0
-                  ? 'Click any bullet to improve it with AI. I\'ll target this exact job.'
+                  ? 'Click a Summary or Experience bullet to target it, then type your instruction.'
                   : 'Loading your resume…';
 
   // ── AbortControllers ───────────────────────────────────────────────────────
   const abortRef     = useRef<AbortController | null>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
 
-  // ── Bullet click ───────────────────────────────────────────────────────────
+  // ── Bullet click — Phase 2: Target Acquisition ─────────────────────────────
+  // Clicking a bullet sets it as the active target (highlights it) so the
+  // user can then type a coaching prompt in the ChatInput.
+  // Clicking the same bullet again deselects it (toggle).
+  // The AI is NOT triggered here — that happens via the ChatInput (Phase 3+).
   const handleBulletClick = useCallback((bullet: ResumeBullet, _section: ResumeSection) => {
     if (!resumeRawText) return;
     if (bullet.text.trim().length < MIN_BULLET_LEN) return;
-
-    // Toggle focus — clicking the same bullet again unfocuses it
-    setFocusedBullet(prev => prev?.id === bullet.id ? null : bullet);
-
-    if (bullet.id === improvingBulletId) return;
-    if (pendingDiff?.fieldPath === bullet.id) return;
-
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-    void improveBullet(
-      bullet.id,
-      bullet.text,
-      buildResumeContext(sections, bullet.id),
-      abortRef.current.signal,
-    );
-  }, [resumeRawText, improvingBulletId, pendingDiff, sections, improveBullet]);
+    // Toggle: same bullet = deselect; new bullet = select
+    setActiveBulletId(activeBulletId === bullet.id ? null : bullet.id);
+  }, [resumeRawText, activeBulletId, setActiveBulletId]);
 
   // ── Accept / Reject ────────────────────────────────────────────────────────
   const handleAccept = useCallback(() => {
@@ -1288,8 +1302,8 @@ export default function WorkspacePage() {
     );
     bumpAtsScore(pendingDiff.scoreImpact);
     applyDiff();
-    setFocusedBullet(null);
-  }, [pendingDiff, applyDiff, bumpAtsScore]);
+    setActiveBulletId(null);
+  }, [pendingDiff, applyDiff, bumpAtsScore, setActiveBulletId]);
 
   const handleReject = useCallback(() => {
     abortRef.current?.abort();
@@ -1300,7 +1314,7 @@ export default function WorkspacePage() {
   // ── Keyword chip click — inject via /api/rewrite-section ──────────────────
   // PRD §4.7: keywords ALWAYS pass through the rewrite pipeline. Never raw.
   const handleKeywordClick = useCallback((keyword: string) => {
-    const target = focusedBullet ?? sections[0]?.bullets[0];
+    const target = activeBullet ?? sections[0]?.bullets[0];
     if (!target || target.text.trim().length < MIN_BULLET_LEN) return;
 
     abortRef.current?.abort();
@@ -1310,7 +1324,7 @@ export default function WorkspacePage() {
     // knows it must include this keyword in its output.
     const ctxWithKw = `[REQUIRED_KEYWORD: ${keyword}] ${buildResumeContext(sections, target.id)}`;
     void improveBullet(target.id, target.text, ctxWithKw, abortRef.current.signal);
-  }, [focusedBullet, sections, improveBullet]);
+  }, [activeBullet, sections, improveBullet]);
 
   // ── Chat message ───────────────────────────────────────────────────────────
   const handleSendMessage = useCallback(async (text: string) => {
@@ -1329,8 +1343,8 @@ export default function WorkspacePage() {
         {
           message:         text,
           job_description: activeJobDescription ?? '',
-          resume_context:  buildResumeContext(sections, focusedBullet?.id ?? ''),
-          focused_bullet:  focusedBullet?.text ?? '',
+          resume_context:  buildResumeContext(sections, activeBullet?.id ?? ''),
+          focused_bullet:  activeBullet?.text ?? '',
           conversation_history: messages.slice(-8).map(m => ({
             role: m.role as 'user' | 'assistant',
             content: m.content,
@@ -1355,7 +1369,7 @@ export default function WorkspacePage() {
     } finally {
       setIsGenerating(false);
     }
-  }, [addMessage, setIsGenerating, activeJobDescription, sections, focusedBullet, messages]);
+  }, [addMessage, setIsGenerating, activeJobDescription, sections, activeBullet, messages]);
 
   useEffect(() => () => {
     abortRef.current?.abort();
@@ -1373,10 +1387,11 @@ export default function WorkspacePage() {
     atsGaps,
     messages,
     chatIsGenerating,
+    hasTarget:         activeBulletId !== null,
     onSendMessage:     handleSendMessage,
     onChatFocusChange: setIsChatFocused,
     onKeywordClick:    handleKeywordClick,
-    focusedBullet,
+    focusedBullet:     activeBullet,
   };
 
   const isHydrating = !attempted || isLoadingResume;
@@ -1398,8 +1413,12 @@ export default function WorkspacePage() {
       <div className="flex-1 flex flex-row overflow-hidden pt-[97px]">
 
         {/* ── Resume panel ──────────────────────────────────────────────── */}
-        <main className="flex-1 overflow-y-auto scrollbar-hidden px-4 py-4
-                         pb-[22vh] md:pb-4">
+        {/* onClick clears active target when the user clicks the panel background.
+            EditableBullet uses e.stopPropagation() so bullet clicks don't bubble here. */}
+        <main
+          className="flex-1 overflow-y-auto scrollbar-hidden px-4 py-4 pb-[22vh] md:pb-4"
+          onClick={() => setActiveBulletId(null)}
+        >
           <div className="max-w-2xl mx-auto">
             {isHydrating ? (
               <ResumeSkeleton />
@@ -1409,7 +1428,7 @@ export default function WorkspacePage() {
                 sections={sections}
                 pendingDiff={pendingDiff}
                 improvingBulletId={improvingBulletId}
-                focusedBullet={focusedBullet}
+                activeBulletId={activeBulletId}
                 onBulletClick={handleBulletClick}
                 onAccept={handleAccept}
                 onReject={handleReject}

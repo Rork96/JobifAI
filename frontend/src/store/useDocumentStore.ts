@@ -83,6 +83,15 @@ interface DocumentState {
   pendingDiff:    PendingDiff | null;
 
   // ── AI improvement state (Phase 8) ────────────────────────────────────────
+  /**
+   * Phase 2 — Target Acquisition.
+   * ID of the bullet the user has selected as the active AI target.
+   * Null = no target acquired → ChatInput is disabled.
+   * Set by clicking an EditableBullet; cleared by clicking outside or accepting a diff.
+   */
+  activeBulletId: string | null;
+  setActiveBulletId: (id: string | null) => void;
+
   /** ID of the bullet currently being AI-rewritten. Null when idle. */
   improvingBulletId: string | null;
   /**
@@ -194,6 +203,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   resumeData:           null,
   resumeRawText:        null,
   pendingDiff:          null,
+  activeBulletId:       null,
   improvingBulletId:    null,
   lastRewriteFailed:    false,
   skillGaps:            [],
@@ -373,6 +383,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   rejectDiff: () => set({ pendingDiff: null }),
 
+  // ── Phase 2: target acquisition ───────────────────────────────────────────
+
+  setActiveBulletId: (id) => set({ activeBulletId: id }),
+
   // ── Phase 8: AI bullet improvement ────────────────────────────────────────
 
   improveBullet: async (bulletId, bulletText, resumeContext, signal) => {
@@ -467,6 +481,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       resumeData:           null,
       resumeRawText:        null,
       pendingDiff:          null,
+      activeBulletId:       null,
       improvingBulletId:    null,
       lastRewriteFailed:    false,
       skillGaps:            [],
