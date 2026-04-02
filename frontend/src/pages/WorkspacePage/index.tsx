@@ -59,7 +59,7 @@ import { useSessionStore }                      from '@/store/useSessionStore';
 import { useAuthStore }                         from '@/store/useAuthStore';
 import { useDocumentStore, type PendingDiff }   from '@/store/useDocumentStore';
 import { useChatStore, type ChatMessage }        from '@/store/useChatStore';
-import { mockRewriteBullet }                     from '@/lib/mockApi';
+import { improveBullet as apiRewriteBullet }      from '@/lib/api';
 import { useSpeechRecognition }                 from '@/hooks/useSpeechRecognition';
 import { calculateAtsScore, getMissingKeywords } from '@/shared/utils/atsScore';
 
@@ -1326,16 +1326,15 @@ export default function WorkspacePage() {
     void improveBullet(target.id, target.text, ctxWithKw, abortRef.current.signal);
   }, [activeBullet, sections, improveBullet]);
 
-  // ── Chat message — Phase 4: Mocked Sandwich Protocol ─────────────────────
+  // ── Chat message — Phase 5: Live API ──────────────────────────────────────
   //
-  // Flow: ChatInput submit → mock API (2 s) → SandwichDiffInline → Accept/Reject
+  // Flow: ChatInput submit → POST /api/rewrite-section → SandwichDiffInline
+  //       → Accept (bullet updated in place) | Reject (diff dismissed)
   //
-  // Phase 3 guards are preserved: activeBulletId is snapshotted at send time
-  // so the diff is always tagged to the correct bullet even if the user clicks
-  // away during the 2-second wait.
-  //
-  // Phase 5 swap: replace mockRewriteBullet with the real /api/rewrite-section
-  // call — the request/response interface is identical by design.
+  // Phase 3 guard: activeBulletId snapshotted at send time — the diff is
+  // always tagged to the correct bullet even if the user clicks away mid-flight.
+  // Instruction is passed as [USER_INSTRUCTION:] prefix on resume_context,
+  // matching the [REQUIRED_KEYWORD:] convention from handleKeywordClick.
   const handleSendMessage = useCallback(async (text: string) => {
     // ── Hard guard (Phase 3) ──────────────────────────────────────────────────
     if (!activeBulletId) {
@@ -1366,18 +1365,30 @@ export default function WorkspacePage() {
       setPendingDiff(null);
     }
 
-    // 3. Trigger loading skeleton in SandwichDiffInline below the bullet
+    // 3. Cancel any in-flight keyword injection; create fresh signal for this call
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    // 4. Trigger loading skeleton in SandwichDiffInline below the bullet
     setImprovingBulletId(boundId);
 
     try {
-      // 4. Call mock API — Phase 5 swaps this for the real endpoint
-      const result = await mockRewriteBullet({
-        old_text:        boundText,
-        instruction:     text,
-        job_description: activeJobDescription ?? '',
-      });
+      // 5. Call POST /api/rewrite-section.
+      //    The user's instruction is passed as a [USER_INSTRUCTION:] prefix on
+      //    resume_context — the same convention used by handleKeywordClick for
+      //    [REQUIRED_KEYWORD:] injection (PRD §4.7).
+      const boundSection = sections.find(s => s.bullets.some(b => b.id === boundId));
+      const result = await apiRewriteBullet(
+        {
+          section:         boundSection?.title ?? 'Experience',
+          old_text:        boundText,
+          job_description: activeJobDescription ?? '',
+          resume_context:  `[USER_INSTRUCTION: ${text}] ${buildResumeContext(sections, boundId)}`,
+        },
+        { signal: abortRef.current.signal },
+      );
 
-      // 5. Populate the diff → SandwichDiffInline renders with Accept/Reject
+      // 6. Populate the diff → SandwichDiffInline renders with Accept/Reject
       setPendingDiff({
         fieldPath:    boundId,
         originalText: boundText,
@@ -1395,13 +1406,13 @@ export default function WorkspacePage() {
         bulletId:  boundId,
       });
     } finally {
-      // 6. Always clear the loading skeleton
+      // 7. Always clear the loading skeleton
       setImprovingBulletId(null);
     }
   }, [
     activeBulletId, activeBullet, addMessage,
     pendingDiff, setPendingDiff, setImprovingBulletId,
-    activeJobDescription,
+    activeJobDescription, sections,
   ]);
 
   useEffect(() => () => {
