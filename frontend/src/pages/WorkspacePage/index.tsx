@@ -59,7 +59,7 @@ import { useSessionStore }                      from '@/store/useSessionStore';
 import { useAuthStore }                         from '@/store/useAuthStore';
 import { useDocumentStore, type PendingDiff }   from '@/store/useDocumentStore';
 import { useChatStore, type ChatMessage }        from '@/store/useChatStore';
-import { coachMessage as apiCoachMessage }       from '@/lib/api';
+import { mockRewriteBullet }                     from '@/lib/mockApi';
 import { useSpeechRecognition }                 from '@/hooks/useSpeechRecognition';
 import { calculateAtsScore, getMissingKeywords } from '@/shared/utils/atsScore';
 
@@ -1151,6 +1151,8 @@ export default function WorkspacePage() {
     atsGaps,
     applyDiff,
     rejectDiff,
+    setPendingDiff,
+    setImprovingBulletId,
     bumpAtsScore,
     improveBullet,
     loadLatestResume,
@@ -1160,7 +1162,6 @@ export default function WorkspacePage() {
   const messages         = useChatStore(s => s.messages);
   const chatIsGenerating = useChatStore(s => s.isGenerating);
   const addMessage       = useChatStore(s => s.addMessage);
-  const setIsGenerating  = useChatStore(s => s.setIsGenerating);
 
   // ── Local state ────────────────────────────────────────────────────────────
   const [isChatFocused, setIsChatFocused] = useState(false);
@@ -1272,8 +1273,7 @@ export default function WorkspacePage() {
                   : 'Loading your resume…';
 
   // ── AbortControllers ───────────────────────────────────────────────────────
-  const abortRef     = useRef<AbortController | null>(null);
-  const chatAbortRef = useRef<AbortController | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── Bullet click — Phase 2: Target Acquisition ─────────────────────────────
   // Clicking a bullet sets it as the active target (highlights it) so the
@@ -1326,30 +1326,33 @@ export default function WorkspacePage() {
     void improveBullet(target.id, target.text, ctxWithKw, abortRef.current.signal);
   }, [activeBullet, sections, improveBullet]);
 
-  // ── Chat message — Phase 3: Dialogue Flow ─────────────────────────────────
-  // Every message is strictly bound to activeBulletId at the time of sending.
-  // If no bullet is selected (e.g. ChatInput guard bypassed programmatically),
-  // the handler rejects the message and prompts the user — no AI call is made.
-  // This is a second line of defence; the primary gate is ChatInput's disabled
-  // state from Phase 2.
+  // ── Chat message — Phase 4: Mocked Sandwich Protocol ─────────────────────
+  //
+  // Flow: ChatInput submit → mock API (2 s) → SandwichDiffInline → Accept/Reject
+  //
+  // Phase 3 guards are preserved: activeBulletId is snapshotted at send time
+  // so the diff is always tagged to the correct bullet even if the user clicks
+  // away during the 2-second wait.
+  //
+  // Phase 5 swap: replace mockRewriteBullet with the real /api/rewrite-section
+  // call — the request/response interface is identical by design.
   const handleSendMessage = useCallback(async (text: string) => {
-    // ── Hard guard: no target = no message ───────────────────────────────────
+    // ── Hard guard (Phase 3) ──────────────────────────────────────────────────
     if (!activeBulletId) {
       addMessage({
-        id: `sys-${Date.now()}`,
-        role: 'assistant',
-        content: 'Please select a bullet to improve first — click any Summary or Experience bullet.',
+        id:        `sys-${Date.now()}`,
+        role:      'assistant',
+        content:   'Please select a bullet to improve first — click any Summary or Experience bullet.',
         timestamp: new Date(),
       });
       return;
     }
 
-    // Snapshot the bound bullet ID at submission time.
-    // Even if the user clicks elsewhere while the request is in flight,
-    // the response message will still be tagged to the correct bullet.
+    // Snapshot bound context before any await
     const boundId   = activeBulletId;
     const boundText = activeBullet?.text ?? '';
 
+    // 1. Add user instruction to chat history
     addMessage({
       id:        `u-${Date.now()}`,
       role:      'user',
@@ -1358,49 +1361,51 @@ export default function WorkspacePage() {
       bulletId:  boundId,
     });
 
-    setIsGenerating(true);
-    chatAbortRef.current?.abort();
-    chatAbortRef.current = new AbortController();
+    // 2. Clear any existing diff from a different bullet (one diff at a time)
+    if (pendingDiff && pendingDiff.fieldPath !== boundId) {
+      setPendingDiff(null);
+    }
+
+    // 3. Trigger loading skeleton in SandwichDiffInline below the bullet
+    setImprovingBulletId(boundId);
 
     try {
-      const result = await apiCoachMessage(
-        {
-          message:         text,
-          job_description: activeJobDescription ?? '',
-          resume_context:  buildResumeContext(sections, boundId),
-          focused_bullet:  boundText,
-          conversation_history: messages.slice(-8).map(m => ({
-            role:    m.role as 'user' | 'assistant',
-            content: m.content,
-          })),
-        },
-        { signal: chatAbortRef.current.signal },
-      );
-
-      addMessage({
-        id:        `a-${Date.now()}`,
-        role:      'assistant',
-        content:   result.response,
-        timestamp: new Date(),
-        bulletId:  boundId,
+      // 4. Call mock API — Phase 5 swaps this for the real endpoint
+      const result = await mockRewriteBullet({
+        old_text:        boundText,
+        instruction:     text,
+        job_description: activeJobDescription ?? '',
       });
+
+      // 5. Populate the diff → SandwichDiffInline renders with Accept/Reject
+      setPendingDiff({
+        fieldPath:    boundId,
+        originalText: boundText,
+        proposedText: result.new_text,
+        scoreImpact:  result.predicted_score_increase,
+      });
+
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       addMessage({
         id:        `err-${Date.now()}`,
         role:      'assistant',
-        content:   'Connection error — check your network and try again.',
+        content:   'Rewrite failed — check your connection and try again.',
         timestamp: new Date(),
         bulletId:  boundId,
       });
     } finally {
-      setIsGenerating(false);
+      // 6. Always clear the loading skeleton
+      setImprovingBulletId(null);
     }
-  }, [activeBulletId, activeBullet, addMessage, setIsGenerating, activeJobDescription, sections, messages]);
+  }, [
+    activeBulletId, activeBullet, addMessage,
+    pendingDiff, setPendingDiff, setImprovingBulletId,
+    activeJobDescription,
+  ]);
 
   useEffect(() => () => {
     abortRef.current?.abort();
-    chatAbortRef.current?.abort();
   }, []);
 
   // ── Coaching panel props ───────────────────────────────────────────────────

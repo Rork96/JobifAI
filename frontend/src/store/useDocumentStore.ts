@@ -172,6 +172,13 @@ interface DocumentState {
     signal?:       AbortSignal,
   ) => Promise<void>;
 
+  /**
+   * Phase 4 — expose improvingBulletId as a direct setter so the page can
+   * drive the SandwichDiffInline loading skeleton from the mock (and later real)
+   * rewrite flow without going through the full improveBullet() thunk.
+   */
+  setImprovingBulletId: (id: string | null) => void;
+
   bumpAtsScore: (delta: number) => void;
 
   setAnalysisResult: (
@@ -386,6 +393,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   // ── Phase 2: target acquisition ───────────────────────────────────────────
 
   setActiveBulletId: (id) => set({ activeBulletId: id }),
+
+  // ── Phase 4: expose improvingBulletId for mock/real rewrite flow ──────────
+
+  setImprovingBulletId: (id) => set({ improvingBulletId: id }),
 
   // ── Phase 8: AI bullet improvement ────────────────────────────────────────
 
