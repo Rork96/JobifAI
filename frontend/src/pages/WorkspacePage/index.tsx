@@ -61,7 +61,6 @@ import { useDocumentStore, type PendingDiff }   from '@/store/useDocumentStore';
 import { useChatStore, type ChatMessage }        from '@/store/useChatStore';
 import { improveBullet as apiRewriteBullet }      from '@/lib/api';
 import { useSpeechRecognition }                 from '@/hooks/useSpeechRecognition';
-import { calculateAtsScore, getMissingKeywords } from '@/shared/utils/atsScore';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -474,8 +473,8 @@ function ChatMessages({ messages, isGenerating }: { messages: ChatMessage[]; isG
 // ─────────────────────────────────────────────────────────────────────────────
 
 function WorkspaceNavbar({
-  mode, atsScore, liveScore,
-}: { mode: WorkspaceMode; atsScore: number | null; liveScore: number | null }) {
+  mode, atsScore, isAnalyzing,
+}: { mode: WorkspaceMode; atsScore: number | null; isAnalyzing: boolean }) {
   const navigate = useNavigate();
   const user     = useAuthStore(s => s.user);
 
@@ -485,9 +484,6 @@ function WorkspaceNavbar({
     cover:     { label: 'Cover Letter',   cls: 'bg-pink-100 text-pink-700'   },
   };
   const b = BADGE[mode];
-
-  // Use live client-side score while backend score is null, else show backend's
-  const displayScore = atsScore ?? liveScore;
 
   return (
     <nav className="fixed top-0 inset-x-0 z-40 glass border-b border-white/20">
@@ -512,19 +508,18 @@ function WorkspaceNavbar({
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-1 text-xs">
             <span className="text-slate-400 font-medium">ATS</span>
-            {displayScore !== null ? (
+            {isAnalyzing ? (
+              <span className="text-slate-400 animate-pulse">analyzing…</span>
+            ) : atsScore !== null ? (
               <>
                 <span className={`font-bold tabular-nums ${
-                  displayScore >= 70 ? 'text-green-600' :
-                  displayScore >= 40 ? 'text-amber-600' :
+                  atsScore >= 70 ? 'text-green-600' :
+                  atsScore >= 40 ? 'text-amber-600' :
                   'text-red-600'
                 }`}>
-                  {displayScore}
+                  {atsScore}
                 </span>
                 <span className="text-slate-300">/100</span>
-                {atsScore === null && liveScore !== null && (
-                  <span className="text-[9px] text-slate-400 ml-0.5">(est.)</span>
-                )}
               </>
             ) : (
               <span className="text-slate-400">—</span>
@@ -549,7 +544,7 @@ interface CoachingPanelProps {
   macState:          MacState;
   macSays:           string;
   atsScore:          number | null;
-  liveScore:         number | null;
+  isAnalyzing:       boolean;
   diff:              PendingDiff | null;
   missingSkills:     string[];
   matchedSkills:     string[];
@@ -570,20 +565,17 @@ interface CoachingPanelProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function CoachingPanel({
-  macState, macSays, atsScore, liveScore, diff,
+  macState, macSays, atsScore, isAnalyzing, diff,
   missingSkills, matchedSkills, atsGaps,
   messages, chatIsGenerating, hasTarget, onSendMessage, onChatFocusChange,
   onKeywordClick, focusedBullet,
 }: CoachingPanelProps) {
 
-  const displayScore = atsScore ?? liveScore;
-
-  // Merge backend missing-skills with local client-side gaps (deduped)
+  // Missing keywords come exclusively from the backend — no client-side fallback.
+  // atsGaps is the legacy skill_gaps array; missingSkills is the structured list.
   const displayMissing: string[] = useMemo(() => {
-    const backendList = missingSkills.length > 0
-      ? missingSkills
-      : atsGaps.map(g => { const m = g.match(/["']([^"']+)["']/); return m ? m[1] : g; }).filter(Boolean);
-    return [...new Set(backendList)].slice(0, 8);
+    if (missingSkills.length > 0) return [...new Set(missingSkills)].slice(0, 8);
+    return [...new Set(atsGaps)].slice(0, 8);
   }, [missingSkills, atsGaps]);
 
   return (
@@ -616,19 +608,18 @@ function CoachingPanel({
               ATS Score
             </p>
             <div className="flex items-baseline gap-1">
-              {displayScore !== null ? (
+              {isAnalyzing ? (
+                <span className="text-sm text-slate-400 animate-pulse">Analyzing…</span>
+              ) : atsScore !== null ? (
                 <>
                   <span className={`text-2xl font-black tabular-nums ${
-                    displayScore >= 70 ? 'text-green-600' :
-                    displayScore >= 40 ? 'text-amber-600' :
+                    atsScore >= 70 ? 'text-green-600' :
+                    atsScore >= 40 ? 'text-amber-600' :
                     'text-red-600'
                   }`}>
-                    {displayScore}
+                    {atsScore}
                   </span>
                   <span className="text-sm text-slate-400">/100</span>
-                  {atsScore === null && liveScore !== null && (
-                    <span className="text-[9px] text-slate-400">(est.)</span>
-                  )}
                 </>
               ) : (
                 <span className="text-2xl font-black text-slate-300">—</span>
@@ -642,7 +633,7 @@ function CoachingPanel({
             </span>
           )}
         </div>
-        {displayScore !== null && displayScore < 50 && (
+        {!isAnalyzing && atsScore !== null && atsScore < 50 && (
           <p className="mt-1 text-xs text-red-500 font-medium">
             ATS may auto-reject this resume.
           </p>
@@ -723,7 +714,7 @@ const VELOCITY_THRESHOLD = 300; // px/s
 
 function MobileBottomSheet(props: CoachingPanelProps) {
   const {
-    macState, macSays, atsScore, liveScore, diff,
+    macState, macSays, atsScore, isAnalyzing, diff,
     missingSkills, atsGaps,
     messages, chatIsGenerating, hasTarget, onSendMessage, onChatFocusChange,
     onKeywordClick, focusedBullet,
@@ -788,12 +779,7 @@ function MobileBottomSheet(props: CoachingPanelProps) {
     animateTo(((snapLevelRef.current + 1) % 3) as 0 | 1 | 2);
   }, [animateTo]);
 
-  const displayScore   = atsScore ?? liveScore;
-  const displayMissing = missingSkills.length > 0
-    ? missingSkills.slice(0, 6)
-    : atsGaps
-        .map(g => { const m = g.match(/["']([^"']+)["']/); return m ? m[1] : g; })
-        .filter(Boolean).slice(0, 6);
+  const displayMissing = (missingSkills.length > 0 ? missingSkills : atsGaps).slice(0, 6);
 
   return (
     <motion.div
@@ -843,18 +829,22 @@ function MobileBottomSheet(props: CoachingPanelProps) {
           <p className="text-sm text-slate-700 leading-snug line-clamp-2">{macSays}</p>
         </div>
 
-        {displayScore !== null && (
+        {(isAnalyzing || atsScore !== null) && (
           <div className="flex-shrink-0 text-right">
             <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest leading-none mb-0.5">
               ATS
             </p>
-            <p className={`text-xl font-black tabular-nums leading-none ${
-              displayScore >= 70 ? 'text-green-600' :
-              displayScore >= 40 ? 'text-amber-600' :
-              'text-red-600'
-            }`}>
-              {displayScore}
-            </p>
+            {isAnalyzing ? (
+              <p className="text-xs text-slate-400 animate-pulse leading-none">…</p>
+            ) : (
+              <p className={`text-xl font-black tabular-nums leading-none ${
+                (atsScore ?? 0) >= 70 ? 'text-green-600' :
+                (atsScore ?? 0) >= 40 ? 'text-amber-600' :
+                'text-red-600'
+              }`}>
+                {atsScore}
+              </p>
+            )}
           </div>
         )}
 
@@ -1139,7 +1129,9 @@ export default function WorkspacePage() {
     resumeRawText,
     activeCvFilename,
     activeJobDescription,
+    activeResumeId,
     isLoadingResume,
+    isAnalyzing,
     pendingDiff,
     activeBulletId,
     setActiveBulletId,
@@ -1175,10 +1167,13 @@ export default function WorkspacePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // Only redirect if there is no resume row at all (brand-new user).
+  // If a row exists but raw_text is missing (e.g. older row), stay on workspace
+  // and show the re-upload prompt — do NOT loop back to dashboard.
   useEffect(() => {
     if (!attempted || isLoadingResume) return;
-    if (!resumeRawText) navigate('/dashboard', { replace: true });
-  }, [attempted, isLoadingResume, resumeRawText, navigate]);
+    if (activeResumeId === null) navigate('/dashboard', { replace: true });
+  }, [attempted, isLoadingResume, activeResumeId, navigate]);
 
   // ── URL mode ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1224,21 +1219,8 @@ export default function WorkspacePage() {
     return null;
   }, [activeBulletId, sections]);
 
-  // ── Live client-side ATS score ─────────────────────────────────────────────
-  // Used when backend score hasn't been computed yet.
-  const liveAtsScore = useMemo(() => {
-    if (!resumeRawText || !activeJobDescription) return null;
-    return calculateAtsScore(resumeRawText, activeJobDescription);
-  }, [resumeRawText, activeJobDescription]);
-
-  // Live missing keywords (client-side, shown when backend list is empty)
-  const liveMissingKeywords = useMemo(() => {
-    if (missingSkills.length > 0) return [];  // backend list takes precedence
-    if (!resumeRawText || !activeJobDescription) return [];
-    return getMissingKeywords(resumeRawText, activeJobDescription);
-  }, [resumeRawText, activeJobDescription, missingSkills]);
-
-  const effectiveMissing = missingSkills.length > 0 ? missingSkills : liveMissingKeywords;
+  // ATS score and missing keywords come exclusively from the backend (/api/ats-score).
+  // No client-side estimation — isAnalyzing drives the "calculating…" state in UI.
 
   // ── Mascot state machine (PRD §4.4) ───────────────────────────────────────
   const macState: MacState =
@@ -1422,10 +1404,10 @@ export default function WorkspacePage() {
   // ── Coaching panel props ───────────────────────────────────────────────────
   const coachingProps: CoachingPanelProps = {
     macState, macSays,
-    atsScore: currentAtsScore,
-    liveScore: liveAtsScore,
-    diff: pendingDiff,
-    missingSkills: effectiveMissing,
+    atsScore:    currentAtsScore,
+    isAnalyzing,
+    diff:        pendingDiff,
+    missingSkills,
     matchedSkills,
     atsGaps,
     messages,
@@ -1446,7 +1428,7 @@ export default function WorkspacePage() {
       <WorkspaceNavbar
         mode={mode}
         atsScore={currentAtsScore}
-        liveScore={liveAtsScore}
+        isAnalyzing={isAnalyzing}
       />
 
       {/*

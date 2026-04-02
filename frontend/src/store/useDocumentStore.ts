@@ -31,7 +31,7 @@
 
 import { create } from 'zustand';
 import { insertResume, fetchLatestResume } from '@/lib/db';
-import { improveBullet as apiBulletImprove, uploadResume as apiUploadResume, ApiError } from '@/lib/api';
+import { improveBullet as apiBulletImprove, uploadResume as apiUploadResume, getAtsScore as apiGetAtsScore, ApiError } from '@/lib/api';
 import { useToastStore } from '@/store/useToastStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -179,6 +179,14 @@ interface DocumentState {
    */
   setImprovingBulletId: (id: string | null) => void;
 
+  /**
+   * Remediation Step 1 — call POST /api/ats-score with the real resume text
+   * and job description. Populates currentAtsScore, missingSkills, matchedSkills,
+   * atsGaps from the backend's semantic embedding analysis.
+   * No-op (silent) if either arg is blank. Never throws — silent-fail on error.
+   */
+  runAtsAnalysis: (resumeText: string, jobDescription: string) => Promise<void>;
+
   bumpAtsScore: (delta: number) => void;
 
   setAnalysisResult: (
@@ -284,6 +292,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       pendingAtsScore:      null,
       pendingAtsGaps:       [],
     });
+
+    // Kick off real ATS analysis now that both resume and JD are available
+    if (parsedResumeText && data.job_description) {
+      void get().runAtsAnalysis(parsedResumeText, data.job_description);
+    }
   },
 
   loadLatestResume: async (userId) => {
@@ -316,6 +329,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       atsGaps:              data.ats_gaps as string[],
       resumeRawText:        rawText,
     });
+
+    // Re-run ATS analysis on refresh so the score reflects the current resume + JD
+    if (rawText && data.job_description) {
+      void get().runAtsAnalysis(rawText, data.job_description);
+    }
   },
 
   // ── Direct upload (Dashboard "Fix My Resume" button) ─────────────────────
@@ -375,6 +393,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       pendingAtsGaps:       [],
     });
 
+    // Step 4: run real ATS analysis — fire and forget, never blocks navigation
+    if (jd) {
+      void get().runAtsAnalysis(parsedText, jd);
+    }
+
     return true;
   },
 
@@ -397,6 +420,32 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   // ── Phase 4: expose improvingBulletId for mock/real rewrite flow ──────────
 
   setImprovingBulletId: (id) => set({ improvingBulletId: id }),
+
+  // ── Remediation Step 1: real ATS analysis via backend ─────────────────────
+
+  runAtsAnalysis: async (resumeText, jobDescription) => {
+    if (!resumeText?.trim() || !jobDescription?.trim()) return;
+
+    set({ isAnalyzing: true, analysisError: null });
+    try {
+      const result = await apiGetAtsScore({
+        resume_text:     resumeText,
+        job_description: jobDescription,
+      });
+      set({
+        currentAtsScore: result.score,
+        realAtsScore:    result.score,
+        matchedSkills:   result.matched_skills,
+        missingSkills:   result.missing_skills.map(m => m.skill),
+        atsGaps:         result.skill_gaps,
+      });
+    } catch (err) {
+      // Silent fail — ATS analysis must never block resume editing.
+      console.warn('[useDocumentStore] runAtsAnalysis failed (non-fatal):', err);
+    } finally {
+      set({ isAnalyzing: false });
+    }
+  },
 
   // ── Phase 8: AI bullet improvement ────────────────────────────────────────
 

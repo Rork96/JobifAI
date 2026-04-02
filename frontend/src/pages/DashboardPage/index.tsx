@@ -314,18 +314,26 @@ export default function DashboardPage() {
     pendingCvFile,
     activeCvFilename,
     activeJdSnippet,
+    activeJobDescription,
     activeResumeId,
     currentAtsScore,
     isLoadingResume,
     persistResume,
     loadLatestResume,
     uploadResumeFile,
+    setPendingJdText,
     clearDocument,
   } = useDocumentStore();
 
   // Hidden file input for "Fix My Resume" direct upload
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+
+  // JD input — pre-filled from the active session, editable at any time.
+  // Written to the store before the file picker opens so uploadResumeFile
+  // picks it up via pendingJdText.
+  const [jdText, setJdText] = useState(() => activeJobDescription ?? '');
+  const [jdError, setJdError] = useState<string | null>(null);
 
   // On mount: if pending CV/JD from landing page soft-gate → persist to DB;
   // else if no active resume yet → load latest from DB (returning user).
@@ -409,9 +417,44 @@ export default function DashboardPage() {
             isLoading={isLoadingResume}
             onChangeDocuments={() => {
               clearDocument();
-              fileInputRef.current?.click();
+              setJdText('');
+              setJdError(null);
+              // File picker opens after the user fills in the new JD
             }}
           />
+        </motion.div>
+
+        {/* ── JD INPUT — required before upload ────────────────── */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.08 }}
+          className="mb-4"
+        >
+          <div className={`rounded-2xl border p-4 sm:p-5 bg-white ${jdError ? 'border-red-300' : 'border-slate-200'}`}>
+            <label htmlFor="jd-input" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">
+              💼 Job Description <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              id="jd-input"
+              value={jdText}
+              onChange={e => { setJdText(e.target.value); if (jdError) setJdError(null); }}
+              placeholder="Paste the full job description here — the AI uses it to score your resume and target missing keywords…"
+              rows={5}
+              className="w-full text-sm text-slate-700 placeholder-slate-400 bg-slate-50
+                         border border-slate-200 rounded-xl px-3 py-2.5 resize-none
+                         focus:outline-none focus:border-brand-400 focus:bg-white
+                         transition-colors leading-relaxed"
+            />
+            {jdError && (
+              <p className="mt-1.5 text-xs text-red-500 font-medium">{jdError}</p>
+            )}
+            {!jdError && jdText.trim() && (
+              <p className="mt-1.5 text-[10px] text-slate-400">
+                ✓ Job description saved — upload your CV to get your ATS score.
+              </p>
+            )}
+          </div>
         </motion.div>
 
         {/* ── HARDCORE TOGGLE ──────────────────────────────────── */}
@@ -439,13 +482,18 @@ export default function DashboardPage() {
             variant="available"
             quotaLabel="3 free rewrites"
             onClick={() => {
+              if (isUploading || isLoadingResume) return;
               // If we already have an active resume, go straight to workspace.
-              // Otherwise open the file picker so the user uploads their CV first.
-              if (activeResumeId && !isUploading) {
-                navigate('/workspace?mode=resume');
-              } else if (!isUploading) {
-                fileInputRef.current?.click();
+              if (activeResumeId) { navigate('/workspace?mode=resume'); return; }
+              // Gate: JD must be set before the file picker opens.
+              if (!jdText.trim()) {
+                setJdError('Please paste a job description first — the AI needs it to score your resume.');
+                return;
               }
+              setJdError(null);
+              // Persist JD to store so uploadResumeFile picks it up
+              setPendingJdText(jdText.trim());
+              fileInputRef.current?.click();
             }}
             delay={0.15}
           />
