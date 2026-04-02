@@ -235,6 +235,17 @@ function parseResumeToSections(rawText: string): ResumeSection[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Section interactivity gate (Phase 1 — PRD §4 scope restriction)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ONLY bullets inside Summary and Experience sections are interactive
+// EditableBullet targets. All other sections (Education, Skills, Contacts,
+// Projects, Certifications, etc.) are rendered as static read-only text.
+// This ensures the AI can only be aimed at content worth rewriting.
+
+const INTERACTIVE_SECTIONS = new Set(['Summary', 'Experience']);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -940,9 +951,26 @@ function ResumePanel({
                 <div className="flex-1 h-px bg-slate-100" />
               </div>
 
-              {/* Bullet list — every entry is its own interactive row */}
+              {/*
+                Bullet list.
+                INTERACTIVE_SECTIONS (Summary, Experience) → EditableBullet (role="button").
+                All other sections → StaticBullet (read-only, no AI scope).
+              */}
               <ul className="space-y-1">
                 {section.bullets.map(bullet => {
+
+                  // ── Static sections: Education, Skills, Contacts, etc. ────────
+                  if (!INTERACTIVE_SECTIONS.has(section.title)) {
+                    return (
+                      <li key={bullet.id}
+                          className="flex items-start gap-2 text-sm leading-relaxed py-0.5">
+                        <span className="mt-[7px] flex-shrink-0 w-1.5 h-1.5 rounded-full bg-slate-200" />
+                        <span className="text-slate-600 flex-1 select-text">{bullet.text}</span>
+                      </li>
+                    );
+                  }
+
+                  // ── Interactive sections: Summary + Experience ────────────────
                   const isImproving   = bullet.id === improvingBulletId;
                   const isTargeted    = hasDiff && bullet.id === pendingDiff?.fieldPath;
                   const isFocused     = focusedBullet?.id === bullet.id && !isTargeted && !isImproving;
