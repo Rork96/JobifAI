@@ -1,523 +1,429 @@
 /**
  * DashboardPage — Route: /dashboard  (protected)
- * PRD §3 — Central Hub
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Hub UI. Two states:
+ *   empty   — no resumes yet → "Welcome to the 1%" + CTA
+ *   loaded  — resume grid → cards showing title, ATS score, last updated
  *
- * Layout (PRD §3 ASCII):
- *   ┌──────────────────────────────────────────────────────────┐
- *   │ NAVBAR: JobifAI logo · user email · Sign Out             │
- *   ├──────────────────────────────────────────────────────────┤
- *   │ CONTEXT BAR                             [MAC MASCOT]     │
- *   │  📄 resume.pdf  ·  💼 Software Engineer...  ·  ATS: 34  │
- *   │  [Change Documents]                                      │
- *   ├──────────────────────────────────────────────────────────┤
- *   │ HARDCORE MENTOR MODE TOGGLE                              │
- *   ├──────────────────────────────────────────────────────────┤
- *   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
- *   │  │  Fix Resume  │  │  Interview   │  │ Cover Letter │  │
- *   │  │  (available) │  │  (1 free)    │  │ 🔒 premium   │  │
- *   │  └──────────────┘  └──────────────┘  └──────────────┘  │
- *   └──────────────────────────────────────────────────────────┘
- *
- * Mobile: cards collapse to single-column, order: Resume → Interview → Cover Letter
- *
- * Phase 4 wiring points (marked TODO):
- *   - Replace hardcoded context bar with useDocumentStore state
- *   - Wire Hardcore toggle PATCH /api/user/me
- *   - Wire action card navigation with useSessionStore.setOnboardingMode
- *   - Replace MacMascot placeholder with useSessionStore.macState
+ * Phase 11.4: Fetches user's resumes from Supabase on mount.
+ * Clicking a card routes to /workspace/:id (load from DB).
+ * "+ Create New Resume" clears store and routes to / (landing intake).
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import DevNav from '@/shared/ui/DevNav';
-import MacMascot from '@/shared/ui/MacMascot';
+import { Trash2 } from 'lucide-react';
 import { useAuthStore } from '@/store/useAuthStore';
-import { useSessionStore } from '@/store/useSessionStore';
 import { useDocumentStore } from '@/store/useDocumentStore';
+import { useBillingStore } from '@/store/useBillingStore';
+import { getUserResumes, deleteResume, deleteAllUserData } from '@/lib/db';
+import type { ResumeRecord } from '@/lib/db';
 
-// ── Navbar ────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-function Navbar() {
-  const navigate = useNavigate();
-  const user     = useAuthStore(s => s.user);
+function formatDate(dateString: string | null | undefined): string {
+  if (!dateString) return 'Unknown date';
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return 'Invalid date';
+    const now = new Date();
+    const isToday =
+      d.getDate()     === now.getDate()     &&
+      d.getMonth()    === now.getMonth()    &&
+      d.getFullYear() === now.getFullYear();
 
-  const handleSignOut = () => {
-    useAuthStore.getState().clearAuth();
-    navigate('/');
-  };
-
-  return (
-    <nav className="fixed top-0 inset-x-0 z-40 glass border-b border-white/20">
-      <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-        <span className="font-bold text-lg tracking-tight text-slate-900">
-          Jobif<span className="text-brand-600">AI</span>
-        </span>
-        <div className="flex items-center gap-3">
-          {user && (
-            <span className="hidden sm:block text-xs text-slate-400 font-mono truncate max-w-[180px]">
-              {user.email}
-            </span>
-          )}
-          <button
-            onClick={handleSignOut}
-            className="text-sm font-medium text-slate-600 hover:text-slate-900
-                       transition-colors px-3 py-1.5 rounded-lg hover:bg-slate-100"
-          >
-            Sign Out
-          </button>
-        </div>
-      </div>
-    </nav>
-  );
-}
-
-// ── Context Bar ───────────────────────────────────────────────────────────────
-
-interface ContextBarProps {
-  cvName:             string | null;
-  jdSnippet:          string | null;
-  atsScore:           number | null;
-  isLoading:          boolean;
-  onChangeDocuments:  () => void;
-}
-
-function ContextBar({ cvName, jdSnippet, atsScore, isLoading, onChangeDocuments }: ContextBarProps) {
-  const scoreColor =
-    (atsScore ?? 0) >= 70 ? 'text-green-600' :
-    (atsScore ?? 0) >= 40 ? 'text-amber-600' :
-    'text-red-600';
-
-  if (isLoading) {
-    return (
-      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-4 sm:p-5">
-        <div className="flex items-start gap-4">
-          <div className="flex-1 space-y-2.5">
-            <div className="h-3 w-24 rounded bg-slate-200 animate-pulse" />
-            <div className="flex gap-4">
-              <div className="h-4 w-32 rounded bg-slate-200 animate-pulse" />
-              <div className="h-4 w-48 rounded bg-slate-200 animate-pulse" />
-              <div className="h-4 w-16 rounded bg-slate-200 animate-pulse" />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    if (isToday) {
+      const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      return `Today at ${time}`;
+    }
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return 'Invalid date';
   }
-
-  return (
-    <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-4 sm:p-5">
-      <div className="flex items-start gap-4">
-        {/* Left: CV / JD meta + change button */}
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
-            Active Application
-          </p>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-            {/* CV pill */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-base">📄</span>
-              <span className="text-sm font-medium text-slate-700 truncate max-w-[140px]">
-                {cvName ?? 'No CV uploaded'}
-              </span>
-            </div>
-            <span className="text-slate-200 hidden sm:block">|</span>
-            {/* JD pill */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-base">💼</span>
-              <span className="text-sm font-medium text-slate-700 truncate max-w-[200px]">
-                {jdSnippet ?? 'No job description'}
-              </span>
-            </div>
-            <span className="text-slate-200 hidden sm:block">|</span>
-            {/* ATS score badge */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-semibold text-slate-400">ATS</span>
-              {atsScore !== null ? (
-                <span className={`text-sm font-bold tabular-nums ${scoreColor}`}>
-                  {atsScore}
-                  <span className="text-slate-300 font-normal">/100</span>
-                </span>
-              ) : (
-                <span className="text-sm font-medium text-slate-400">—</span>
-              )}
-            </div>
-          </div>
-          <button
-            onClick={onChangeDocuments}
-            className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700
-                       hover:underline transition-colors"
-          >
-            Change Documents
-          </button>
-        </div>
-
-        {/* Right: Mac Mascot placeholder (PRD §3.4) */}
-        <div className="flex-shrink-0 hidden sm:block">
-          {/* TODO Phase 4: drive state from useSessionStore.macState */}
-          <MacMascot state="idle" size={80} />
-        </div>
-      </div>
-    </div>
-  );
 }
 
-// ── Hardcore Mode Toggle ──────────────────────────────────────────────────────
-
-function HardcoreToggle() {
-  const isHardcore    = useSessionStore(s => s.isHardcoreMode);
-  const toggleHardcore = useSessionStore(s => s.toggleHardcoreMode);
-
-  return (
-    <div className={`
-      rounded-2xl border p-4 sm:p-5 flex items-center justify-between gap-4
-      transition-colors duration-300
-      ${isHardcore
-        ? 'bg-red-950/5 border-red-300'
-        : 'bg-white border-slate-200'}
-    `}>
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-base">{isHardcore ? '🔥' : '🧘'}</span>
-          <span className="font-semibold text-sm text-slate-900">
-            Hardcore Mentor Mode
-          </span>
-          {isHardcore && (
-            <span className="text-xs font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">
-              ON
-            </span>
-          )}
-        </div>
-        <p className="mt-0.5 text-xs text-slate-500 leading-relaxed">
-          {isHardcore
-            ? 'Brutal, unfiltered feedback. Your recruiter will not be this kind.'
-            : 'Activate for no-fluff, recruiter-brutal feedback on every suggestion.'}
-        </p>
-      </div>
-
-      {/* Toggle switch */}
-      <button
-        onClick={() => {
-          // TODO Phase 4: fire PATCH /api/user/me after toggle
-          toggleHardcore();
-        }}
-        aria-pressed={isHardcore}
-        className={`
-          relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200
-          focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2
-          ${isHardcore
-            ? 'bg-red-500 focus-visible:ring-red-500'
-            : 'bg-slate-200 focus-visible:ring-brand-500'}
-        `}
-      >
-        <span className={`
-          absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm
-          transition-transform duration-200
-          ${isHardcore ? 'translate-x-5' : 'translate-x-0'}
-        `} />
-      </button>
-    </div>
-  );
+function scoreColor(score: number): string {
+  if (score >= 76) return '#16a34a'; // green
+  if (score >= 40) return '#d97706'; // amber
+  return '#dc2626';                  // red
 }
 
-// ── Action Cards ──────────────────────────────────────────────────────────────
+// ── Resume card ───────────────────────────────────────────────────────────────
 
-type CardVariant = 'available' | 'quota' | 'premium-only';
-
-interface ActionCardProps {
-  icon: string;
-  title: string;
-  description: string;
-  cta: string;
-  variant: CardVariant;
-  quotaLabel?: string;
+function ResumeCard({
+  resume,
+  onClick,
+  onDelete,
+}: {
+  resume: Omit<ResumeRecord, 'content'>;
   onClick: () => void;
-  delay?: number;
-}
-
-function ActionCard({
-  icon, title, description, cta, variant, quotaLabel, onClick, delay = 0,
-}: ActionCardProps) {
-  const isLocked = variant === 'premium-only';
-
+  onDelete: () => void;
+}) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: 'easeOut', delay }}
-      className={`
-        relative flex flex-col rounded-2xl border p-5 sm:p-6
-        transition-shadow duration-200
-        ${isLocked
-          ? 'bg-slate-50 border-slate-200'
-          : 'bg-white border-slate-200 hover:shadow-card cursor-pointer group'}
-      `}
-      onClick={!isLocked ? onClick : undefined}
-    >
-      {/* Lock badge */}
-      {isLocked && (
-        <div className="absolute top-3 right-3 flex items-center gap-1
-                        bg-amber-100 text-amber-700 text-xs font-bold
-                        px-2 py-0.5 rounded-full">
-          🔒 Premium
-        </div>
-      )}
-
-      {/* Icon */}
-      <div className={`
-        w-12 h-12 rounded-xl flex items-center justify-center text-2xl mb-4
-        ${isLocked ? 'bg-slate-100' : 'bg-brand-50 group-hover:bg-brand-100 transition-colors'}
-      `}>
-        {icon}
-      </div>
-
-      {/* Copy */}
-      <h3 className={`font-bold text-base mb-1 ${isLocked ? 'text-slate-400' : 'text-slate-900'}`}>
-        {title}
-      </h3>
-      <p className={`text-sm leading-relaxed flex-1 ${isLocked ? 'text-slate-400' : 'text-slate-500'}`}>
-        {description}
-      </p>
-
-      {/* Quota badge */}
-      {quotaLabel && !isLocked && (
-        <div className="mt-3 inline-flex items-center gap-1 text-xs font-semibold
-                        text-brand-600 bg-brand-50 px-2.5 py-1 rounded-full w-fit">
-          {quotaLabel}
-        </div>
-      )}
-
-      {/* CTA */}
+    <div className="relative group">
       <button
-        disabled={isLocked}
-        className={`
-          mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5
-          rounded-xl font-semibold text-sm transition-all duration-150
-          ${isLocked
-            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-            : 'bg-brand-600 hover:bg-brand-700 active:scale-[0.98] text-white shadow-brand'}
-        `}
+        onClick={onClick}
+        className="w-full text-left p-5 rounded-2xl bg-white border border-[#e3e0d6] hover:border-[#c96442]/40 hover:shadow-md transition-all duration-150 group"
       >
-        {cta}
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <h3
+            className="text-sm font-semibold text-[#141413] leading-snug group-hover:text-[#c96442] transition-colors line-clamp-2"
+            style={{ fontFamily: 'Georgia, serif' }}
+          >
+            {resume.title}
+          </h3>
+          {/* ATS score badge */}
+          <span
+            className="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full"
+            style={{
+              color: scoreColor(resume.ats_score),
+              background: `${scoreColor(resume.ats_score)}18`,
+            }}
+          >
+            {resume.ats_score}%
+          </span>
+        </div>
+        <p className="text-xs text-[#b0aea5]" style={{ fontFamily: 'system-ui, Arial, sans-serif' }}>
+          Updated {formatDate(resume.updated_at)}
+        </p>
       </button>
-    </motion.div>
+      {/* Delete button — appears on hover */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        title="Delete resume"
+        className="absolute top-3 right-3 p-1.5 rounded-lg text-[#b0aea5] hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all duration-150"
+      >
+        <Trash2 size={14} />
+      </button>
+    </div>
   );
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
-  const user     = useAuthStore(s => s.user);
+  const navigate      = useNavigate();
+  const user          = useAuthStore(s => s.user);
+  const session       = useAuthStore(s => s.session);
+  const isPremium     = useAuthStore(s => s.isPremium);
+  const clearDocument = useDocumentStore(s => s.clearDocument);
+  const openPaywall   = useBillingStore(s => s.openPaywall);
 
-  const {
-    pendingCvFile,
-    activeCvFilename,
-    activeJdSnippet,
-    activeJobDescription,
-    activeResumeId,
-    currentAtsScore,
-    isLoadingResume,
-    persistResume,
-    loadLatestResume,
-    uploadResumeFile,
-    setPendingJdText,
-    clearDocument,
-  } = useDocumentStore();
+  const [resumes,    setResumes]    = useState<Omit<ResumeRecord, 'content'>[]>([]);
+  const [isLoading,  setIsLoading]  = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Prevents concurrent fetches — reset when user id changes
+  const isFetching = useRef(false);
 
-  // Hidden file input for "Fix My Resume" direct upload
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const initials = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
 
-  // JD input — pre-filled from the active session, editable at any time.
-  // Written to the store before the file picker opens so uploadResumeFile
-  // picks it up via pendingJdText.
-  const [jdText, setJdText] = useState(() => activeJobDescription ?? '');
-  const [jdError, setJdError] = useState<string | null>(null);
-
-  // On mount: if pending CV/JD from landing page soft-gate → persist to DB;
-  // else if no active resume yet → load latest from DB (returning user).
+  // Fetch resumes keyed on user id. Stable string dep prevents re-runs on
+  // token refresh (which rebuilds the user object but keeps the same id).
   useEffect(() => {
-    if (!user) return;
-    if (pendingCvFile !== null) {
-      persistResume(user.id).then(() => navigate('/workspace?mode=resume'));
-    } else if (activeResumeId === null) {
-      loadLatestResume(user.id);
+    let isMounted = true;
+    isFetching.current = false; // reset for new user id
+
+    if (!user?.id || !session) {
+      console.log('🏠 [Dashboard] No user/session — skipping fetch, clearing loading.');
+      setIsLoading(false);
+      return;
     }
+
+    if (isFetching.current) return;
+    isFetching.current = true;
+
+    const fetchResumes = async () => {
+      console.log('🏠 [Dashboard] fetchResumes START — userId:', user.id);
+      setIsLoading(true);
+      setFetchError(null);
+
+      // 5-second outer watchdog — safety net in case the DB-layer 4 s timeout
+      // itself is somehow bypassed (e.g. Promise.race edge case, runtime quirk).
+      // Always resolves to empty-state, never to a limbo or error banner.
+      const watchdog = setTimeout(() => {
+        if (isMounted) {
+          console.error('❌ [Dashboard] 5 s outer watchdog fired — forcing empty state');
+          setResumes([]);
+          setFetchError(null);
+          setIsLoading(false);
+          isFetching.current = false;
+        }
+      }, 5_000);
+
+      try {
+        // getUserResumes now always resolves (never throws) within 4 s max.
+        let data = await getUserResumes(user.id);
+        console.log('🏠 [Dashboard] getUserResumes (1st) — rows:', data.length);
+
+        if (!isMounted) {
+          console.log('🏠 [Dashboard] unmounted after 1st fetch — aborting');
+          return;
+        }
+
+        // Retry once after 800 ms: first load after OAuth redirect can race the
+        // JWT propagation, returning 0 rows even though the user has resumes.
+        if (data.length === 0) {
+          console.log('🏠 [Dashboard] Empty result — retrying after 800 ms');
+          await new Promise(r => setTimeout(r, 800));
+          if (!isMounted) {
+            console.log('🏠 [Dashboard] unmounted during retry wait — aborting');
+            return;
+          }
+          data = await getUserResumes(user.id);
+          console.log('🏠 [Dashboard] getUserResumes (2nd) — rows:', data.length);
+          if (!isMounted) {
+            console.log('🏠 [Dashboard] unmounted after 2nd fetch — aborting');
+            return;
+          }
+        }
+
+        console.log('✅ [Dashboard] Loaded', data.length, 'resume(s)');
+        setResumes(data);
+        setFetchError(null);
+      } catch (err) {
+        // getUserResumes never throws, but defensive catch for any future regression
+        console.error('❌ [Dashboard] Unexpected error in fetchResumes:', err);
+        setResumes([]);
+        setFetchError(null);
+      } finally {
+        clearTimeout(watchdog);
+        if (isMounted) {
+          setIsLoading(false);
+          isFetching.current = false;
+        }
+      }
+    };
+
+    fetchResumes();
+
+    return () => { isMounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  /**
-   * Handles file selected from the hidden <input type="file">.
-   * Uploads the file, persists to DB, then navigates to workspace.
-   */
-  const handleResumeFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user) return;
-
-    // Reset the input so selecting the same file again fires onChange
-    e.target.value = '';
-
-    setIsUploading(true);
-    const ok = await uploadResumeFile(file, user.id);
-    setIsUploading(false);
-
-    if (ok) {
-      navigate('/workspace?mode=resume');
-    }
+  const handleSignOut = () => {
+    clearDocument();
+    // Fire-and-forget: signOut() calls supabase.auth.signOut() then hard-redirects.
+    // We do NOT await — a hanging Supabase call must not freeze the button.
+    // The fallback setTimeout guarantees navigation even if signOut() hangs.
+    useAuthStore.getState().signOut();
+    setTimeout(() => { window.location.href = '/login'; }, 3_000);
   };
 
+  function handleNewResume() {
+    clearDocument();
+    navigate('/');
+  }
+
+  function handleOpenResume(id: string) {
+    navigate(`/workspace/${id}`);
+  }
+
+  async function handleDeleteResume(id: string, title: string) {
+    if (!window.confirm(`Delete "${title}"?\n\nThis cannot be undone.`)) return;
+    setDeleteError(null);
+    const { error } = await deleteResume(id);
+    if (error) {
+      setDeleteError(`Failed to delete resume: ${error}`);
+      return;
+    }
+    setResumes(prev => prev.filter(r => r.id !== id));
+  }
+
+  async function handleDeleteAllData() {
+    if (!user?.id) return;
+    if (!window.confirm('Delete ALL your resumes?\n\nThis will permanently erase every resume in your account.')) return;
+    if (!window.confirm('Are you absolutely sure? This cannot be undone.')) return;
+    setDeleteError(null);
+    const { error } = await deleteAllUserData(user.id);
+    if (error) {
+      setDeleteError(`Failed to delete data: ${error}`);
+      return;
+    }
+    setResumes([]);
+  }
+
+  const sortedResumes = Array.isArray(resumes)
+    ? [...resumes].sort((a, b) => {
+        const dateA = new Date(a?.updated_at || 0).getTime();
+        const dateB = new Date(b?.updated_at || 0).getTime();
+        return dateB - dateA;
+      })
+    : [];
+
   return (
-    <div className="h-full overflow-y-auto scrollbar-hidden bg-bg">
-      {/*
-        Hidden file input — triggered by "Fix My Resume" card onClick.
-        accept limits the OS file picker to supported formats.
-        No UI is rendered; we control it imperatively via the ref.
-      */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".pdf,.docx,.txt"
-        className="hidden"
-        onChange={handleResumeFileSelected}
-      />
+    <div className="min-h-screen bg-[#f5f3ec] flex flex-col">
 
-      <DevNav />
-      <Navbar />
+      {/* ── TopBar ─────────────────────────────────────────────────────────── */}
+      <header className="w-full flex items-center justify-between px-6 py-4 border-b border-[#e3e0d6] bg-[#f5f3ec]/90 sticky top-0 z-10">
+        {/* Logo */}
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-[#c96442] flex items-center justify-center flex-shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-white">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <polyline points="14,2 14,8 20,8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <span className="text-sm font-semibold text-[#141413] tracking-tight">JobifAI</span>
+        </div>
 
-      {/* Offset: DevNav (41px) + Navbar (56px) */}
-      <main className="pt-24 pb-16 px-4 max-w-5xl mx-auto">
-
-        {/* ── WELCOME HEADING ─────────────────────────────────── */}
-        <motion.div
-          initial={{ opacity: 0, y: -12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="mb-6"
-        >
-          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-            Your Career Hub
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Pick a tool to start improving your application.
-          </p>
-        </motion.div>
-
-        {/* ── CONTEXT BAR ──────────────────────────────────────── */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.05 }}
-          className="mb-4"
-        >
-          <ContextBar
-            cvName={activeCvFilename}
-            jdSnippet={activeJdSnippet}
-            atsScore={currentAtsScore}
-            isLoading={isLoadingResume}
-            onChangeDocuments={() => {
-              clearDocument();
-              setJdText('');
-              setJdError(null);
-              // File picker opens after the user fills in the new JD
-            }}
-          />
-        </motion.div>
-
-        {/* ── JD INPUT — required before upload ────────────────── */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.08 }}
-          className="mb-4"
-        >
-          <div className={`rounded-2xl border p-4 sm:p-5 bg-white ${jdError ? 'border-red-300' : 'border-slate-200'}`}>
-            <label htmlFor="jd-input" className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">
-              💼 Job Description <span className="text-red-500">*</span>
-            </label>
-            <textarea
-              id="jd-input"
-              value={jdText}
-              onChange={e => { setJdText(e.target.value); if (jdError) setJdError(null); }}
-              placeholder="Paste the full job description here — the AI uses it to score your resume and target missing keywords…"
-              rows={5}
-              className="w-full text-sm text-slate-700 placeholder-slate-400 bg-slate-50
-                         border border-slate-200 rounded-xl px-3 py-2.5 resize-none
-                         focus:outline-none focus:border-brand-400 focus:bg-white
-                         transition-colors leading-relaxed"
-            />
-            {jdError && (
-              <p className="mt-1.5 text-xs text-red-500 font-medium">{jdError}</p>
+        {/* User controls */}
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className="w-8 h-8 rounded-full bg-[#c96442]/15 flex items-center justify-center">
+              <span className="text-xs font-semibold text-[#c96442]">{initials}</span>
+            </div>
+            {isPremium && (
+              <span
+                className="absolute -top-1.5 -right-1.5 text-[9px] font-bold px-1 py-px rounded-full leading-none"
+                style={{ background: '#c96442', color: '#fff', letterSpacing: '0.04em' }}
+                title="Premium plan active"
+              >
+                PRO
+              </span>
             )}
-            {!jdError && jdText.trim() && (
-              <p className="mt-1.5 text-[10px] text-slate-400">
-                ✓ Job description saved — upload your CV to get your ATS score.
+          </div>
+          <span className="text-sm text-[#6b6963] hidden sm:block truncate max-w-[180px]">
+            {user?.email}
+          </span>
+
+          {/* Upgrade CTA — only shown to free-tier users */}
+          {!isPremium && (
+            <button
+              onClick={() => openPaywall('header_upgrade')}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all duration-150 shrink-0"
+              style={{
+                background: 'linear-gradient(135deg, #c96442 0%, #e07a52 100%)',
+                color: '#fff',
+                boxShadow: '0 1px 4px rgba(201,100,66,0.35)',
+              }}
+            >
+              <span aria-hidden="true">✨</span>
+              <span className="hidden xs:inline">Upgrade to Pro</span>
+              <span className="xs:hidden">Pro</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleSignOut}
+            className="text-xs text-[#b0aea5] hover:text-[#6b6963] transition-colors px-2 py-1 rounded-md hover:bg-[#e8e6dc]"
+          >
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      {/* ── Main ───────────────────────────────────────────────────────────── */}
+      <main className="flex-1 w-full max-w-3xl mx-auto px-6 py-10">
+
+        {/* Section header + CTA */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1
+              className="text-2xl font-semibold text-[#141413] tracking-tight"
+              style={{ fontFamily: 'Georgia, serif' }}
+            >
+              {sortedResumes.length > 0 ? 'Your Resumes' : 'Welcome to the 1%.'}
+            </h1>
+            {sortedResumes.length === 0 && !isLoading && (
+              <p className="text-sm text-[#6b6963] mt-1">
+                I'm Mac, your AI Co-pilot. Let's build a resume that actually gets interviews.
               </p>
             )}
           </div>
-        </motion.div>
 
-        {/* ── HARDCORE TOGGLE ──────────────────────────────────── */}
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.1 }}
-          className="mb-6"
-        >
-          <HardcoreToggle />
-        </motion.div>
-
-        {/* ── ACTION CARDS ─────────────────────────────────────── */}
-        {/* Single column mobile, 3-col md+. Order: Resume → Interview → Cover Letter */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <ActionCard
-            icon="🔧"
-            title="Fix My Resume"
-            description={
-              isUploading || isLoadingResume
-                ? 'Parsing your CV…'
-                : 'Upload your CV and AI rewrites every bullet point to pass ATS keyword filters.'
-            }
-            cta={isUploading || isLoadingResume ? '⏳ Uploading…' : 'Upload CV & Start'}
-            variant="available"
-            quotaLabel="3 free rewrites"
-            onClick={() => {
-              if (isUploading || isLoadingResume) return;
-              // If we already have an active resume, go straight to workspace.
-              if (activeResumeId) { navigate('/workspace?mode=resume'); return; }
-              // Gate: JD must be set before the file picker opens.
-              if (!jdText.trim()) {
-                setJdError('Please paste a job description first — the AI needs it to score your resume.');
-                return;
-              }
-              setJdError(null);
-              // Persist JD to store so uploadResumeFile picks it up
-              setPendingJdText(jdText.trim());
-              fileInputRef.current?.click();
-            }}
-            delay={0.15}
-          />
-          <ActionCard
-            icon="🎤"
-            title="Interview Prep"
-            description="Practice answers to role-specific questions with real-time AI coaching and follow-ups."
-            cta="Start Prep"
-            variant="quota"
-            quotaLabel="1 free session"
-            onClick={() => navigate('/workspace?mode=interview')}
-            delay={0.2}
-          />
-          <ActionCard
-            icon="✉️"
-            title="Cover Letter"
-            description="Generate a tailored, job-specific cover letter that complements your rewritten resume."
-            cta="Unlock — $5"
-            variant="premium-only"
-            onClick={() => navigate('/paywall')}
-            delay={0.25}
-          />
+          {!isLoading && sortedResumes.length > 0 && (
+            <button
+              onClick={handleNewResume}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#c96442] hover:bg-[#b85a3a] active:bg-[#a35234] transition-colors text-white font-semibold text-sm shadow-sm shadow-[#c96442]/20"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              New Resume
+            </button>
+          )}
         </div>
 
+        {/* Content */}
+        {isLoading ? (
+          /* Contained spinner — flex-col relative to <main>, never overlaps header */
+          <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
+            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[#c96442]" />
+            <p className="text-sm text-[#87867f]">Loading your resumes…</p>
+          </div>
+        ) : fetchError ? (
+          <div className="rounded-2xl border border-red-300 bg-red-50 p-6 text-center">
+            <p className="text-sm font-semibold text-red-600 mb-1">Failed to load resumes</p>
+            <p className="text-xs text-red-500 font-mono break-all">{fetchError}</p>
+            <p className="text-xs text-red-400 mt-2">Check the browser console for details.</p>
+          </div>
+        ) : sortedResumes.length === 0 ? (
+          // Empty state CTA
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="w-16 h-16 mb-6 rounded-2xl bg-[#c96442]/10 flex items-center justify-center">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="text-[#c96442]">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <polyline points="14,2 14,8 20,8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <button
+              onClick={handleNewResume}
+              className="flex items-center gap-2.5 px-8 py-4 rounded-2xl bg-[#c96442] hover:bg-[#b85a3a] transition-colors text-white font-semibold text-base shadow-lg shadow-[#c96442]/25"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Create New Resume
+            </button>
+            <p className="mt-5 text-xs text-[#b0aea5]">
+              Upload your resume + paste a job description → get your ATS score in seconds
+            </p>
+          </div>
+        ) : (
+          // Resume grid — always newest first (sorted above)
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {sortedResumes.map(r => (
+              <ResumeCard
+                key={r.id}
+                resume={r}
+                onClick={() => handleOpenResume(r.id)}
+                onDelete={() => handleDeleteResume(r.id, r.title)}
+              />
+            ))
+            }
+          </div>
+        )}
+
+        {/* Delete error banner */}
+        {deleteError && (
+          <div className="mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-xs text-red-600 font-mono">
+            {deleteError}
+          </div>
+        )}
+
+        {/* Danger zone — only shown when resumes exist */}
+        {!isLoading && sortedResumes.length > 0 && (
+          <div className="mt-16 pt-8 border-t border-[#e3e0d6]">
+            <p className="text-xs font-semibold text-[#b0aea5] uppercase tracking-wider mb-3">Danger Zone</p>
+            <button
+              onClick={handleDeleteAllData}
+              className="text-xs text-red-400 hover:text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg border border-red-200 hover:border-red-300 transition-colors"
+            >
+              Delete all my data
+            </button>
+          </div>
+        )}
       </main>
     </div>
   );

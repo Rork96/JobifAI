@@ -1,0 +1,71 @@
+# Supabase local development configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# This file is required for the Supabase CLI to discover the project structure.
+# Without it, `supabase start`, `supabase functions serve`, and `supabase db`
+# commands cannot locate migrations or Edge Functions.
+#
+# Docs: https://supabase.com/docs/guides/cli/config
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Local API ──────────────────────────────────────────────────────────────────
+[api]
+enabled     = true
+port        = 54321
+# Schemas exposed via the auto-generated REST API
+schemas     = ["public", "graphql_public"]
+# Schemas accessible but not listed in the OpenAPI spec
+extra_search_path = ["public", "extensions"]
+max_rows    = 1000
+
+# ── Local Database ─────────────────────────────────────────────────────────────
+[db]
+port          = 54322
+shadow_port   = 54320
+major_version = 15
+
+# ── Local Studio (Dashboard) ──────────────────────────────────────────────────
+[studio]
+enabled = true
+port    = 54323
+# API URL used by Studio to connect to the local API
+api_url = "http://127.0.0.1"
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+[auth]
+enabled         = true
+site_url        = "http://127.0.0.1:5173"
+# Redirect URLs permitted during OAuth flows (space-separated)
+additional_redirect_urls = ["http://localhost:5173", "http://127.0.0.1:5173"]
+jwt_expiry      = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval  = 10
+
+[auth.email]
+enable_signup         = true
+double_confirm_changes = true
+enable_confirmations  = false   # set true in prod; false speeds up local dev
+
+[auth.sms]
+enable_signup        = false
+enable_confirmations = false
+
+# Google OAuth — used by LoginPage.tsx signInWithGoogle()
+[auth.external.google]
+enabled      = false  # enable locally if testing Google OAuth
+client_id    = "env(GOOGLE_CLIENT_ID)"
+secret       = "env(GOOGLE_CLIENT_SECRET)"
+redirect_uri = ""
+
+# ── Edge Functions ─────────────────────────────────────────────────────────────
+[functions]
+# Base path where Edge Function source lives.
+# Each sub-directory becomes one function: functions/<name>/index.ts
+# Functions are served at: http://127.0.0.1:54321/functions/v1/<name>
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+[storage]
+enabled = true
+
+# ── Analytics (disabled locally to reduce noise) ─────────────────────────────
+[analytics]
+enabled = false

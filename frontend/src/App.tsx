@@ -23,6 +23,7 @@ import { Routes, Route, useLocation } from 'react-router-dom';
 
 // Pages — route-level shells with NO business logic (Handbook §3.2)
 import LandingPage    from '@/pages/LandingPage';
+import LoginPage      from '@/pages/LoginPage';
 import DashboardPage  from '@/pages/DashboardPage';
 import WorkspacePage  from '@/pages/WorkspacePage';
 import SettingsPage   from '@/pages/SettingsPage';
@@ -34,6 +35,7 @@ import ProtectedRoute from '@/app/router/ProtectedRoute';
 
 // Global UI
 import Toaster from '@/shared/ui/Toaster';
+import { PaywallModal } from '@/components/paywall/PaywallModal';
 
 // Stores
 import { useAuthStore }     from '@/store/useAuthStore';
@@ -41,6 +43,24 @@ import { useBillingStore }  from '@/store/useBillingStore';
 import { useSessionStore }  from '@/store/useSessionStore';
 import { useChatStore }     from '@/store/useChatStore';
 import { useDocumentStore } from '@/store/useDocumentStore';
+
+/**
+ * GlobalPaywall — singleton modal mounted outside <Routes>.
+ *
+ * Lives above the route tree so it can overlay any page (Dashboard, Workspace,
+ * Settings…) without being unmounted by navigation. Reads isPaywallOpen from
+ * useBillingStore; renders nothing when closed so there is zero DOM overhead.
+ *
+ * onAccessGranted = closePaywall — free trial flow just closes the modal and
+ * lets the user proceed with their free-tier quota.
+ */
+function GlobalPaywall() {
+  const isOpen       = useBillingStore(s => s.isPaywallOpen);
+  const closePaywall = useBillingStore(s => s.closePaywall);
+
+  if (!isOpen) return null;
+  return <PaywallModal onAccessGranted={closePaywall} />;
+}
 
 export default function App() {
   const location = useLocation();
@@ -67,8 +87,9 @@ export default function App() {
 
   return (
     <>
-    {/* Global toast — rendered outside Routes so it survives navigation */}
+    {/* Global overlays — rendered outside Routes so they survive navigation */}
     <Toaster />
+    <GlobalPaywall />
     {/* <AnimatePresence mode="wait"> */}
     <Routes location={location} key={location.pathname}>
 
@@ -78,6 +99,9 @@ export default function App() {
           User sees real computed value (their score) before any account is
           required. PRD §2.1: "Critical constraint: score before auth." */}
       <Route path="/" element={<LandingPage />} />
+
+      {/* Login — auth entry point; redirects authenticated users away. */}
+      <Route path="/login" element={<LoginPage />} />
 
       {/* Paywall: usually shown as a modal; this route handles direct links. */}
       <Route path="/paywall" element={<PaywallPage />} />
@@ -95,10 +119,19 @@ export default function App() {
         }
       />
 
-      {/* Workspace — mode driven by ?mode=resume|interview|cover (PRD §4.8).
-          useSessionStore.workspaceMode is hydrated from the URL param on mount. */}
+      {/* Workspace (new resume) — no :id, post-landing flow */}
       <Route
         path="/workspace"
+        element={
+          <ProtectedRoute>
+            <WorkspacePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Workspace (existing resume) — loaded from DB by id */}
+      <Route
+        path="/workspace/:id"
         element={
           <ProtectedRoute>
             <WorkspacePage />

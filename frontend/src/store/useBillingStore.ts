@@ -17,6 +17,8 @@
  */
 
 import { create } from 'zustand';
+import { useAuthStore } from '@/store/useAuthStore';
+import { supabase } from '@/lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,10 +63,22 @@ interface BillingState {
 
   /**
    * Begin Stripe Checkout. Sets isCheckingOut = true to prevent double-clicks.
-   * The actual API call lives in features/billing/api/checkoutApi.ts.
+   * Invokes the `create-checkout-session` Supabase Edge Function and redirects
+   * the browser to the returned Stripe Checkout URL on success.
+   *
+   * @param priceId  Stripe Price ID (e.g. price_xxx)
+   * @param mode     'subscription' for Pro monthly, 'payment' for 24-Hour Pass.
+   *                 Defaults to 'subscription' if omitted.
    */
-  startCheckout: () => void;
+  startCheckout: (priceId: string, mode?: 'subscription' | 'payment') => Promise<void>;
   finishCheckout: () => void;
+
+  /**
+   * Returns true if the user is premium (no-op).
+   * Returns false AND opens the paywall modal with the given context if not premium.
+   * Use this to gate any premium feature: `if (!checkPaywall('rewrite-limit')) return;`
+   */
+  checkPaywall: (context?: string) => boolean;
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -90,9 +104,104 @@ export const useBillingStore = create<BillingState>((set) => ({
   closeAuthModal: () =>
     set({ isAuthModalOpen: false, authModalContext: null }),
 
-  startCheckout: () =>
-    set({ isCheckingOut: true }),
+  startCheckout: async (priceId: string, mode: 'subscription' | 'payment' = 'subscription') => {
+    set({ isCheckingOut: true });
+
+    // When true, the page is navigating to Stripe — do NOT reset the spinner
+    // in finally, or it flashes back to resting state before the page unloads.
+    let navigatingToStripe = false;
+
+    try {
+      console.log('💳 [Billing] startCheckout — priceId:', priceId, '| mode:', mode);
+
+      // ── Invoke the Edge Function ─────────────────────────────────────────
+      // supabase.functions.invoke() can fail in two distinct ways:
+      //   A) Returns { data: null, error: FunctionsHttpError }  — HTTP 4xx/5xx
+      //   B) Throws SyntaxError — older SDK versions fail to parse an empty
+      //      404 body (e.g. when the local Functions container isn't running).
+      // Both paths are caught here; the outer try/catch handles (B).
+      let invokeData: unknown = null;
+      let invokeError: unknown = null;
+
+      try {
+        const result = await supabase.functions.invoke('create-checkout-session', {
+          body: {
+            priceId,
+            returnUrl: `${window.location.origin}/dashboard`,
+            mode,
+          },
+        });
+        invokeData  = result.data;
+        invokeError = result.error;
+      } catch (sdkErr) {
+        // SDK threw directly (SyntaxError on empty body, network failure, etc.)
+        // Reclassify into a user-friendly message based on what we know.
+        const raw = sdkErr instanceof Error ? sdkErr.message : String(sdkErr);
+        const isParseError = raw.toLowerCase().includes('json') ||
+                             raw.toLowerCase().includes('unexpected');
+        const isNetworkError = raw.toLowerCase().includes('fetch') ||
+                               raw.toLowerCase().includes('network');
+
+        if (isParseError || isNetworkError) {
+          throw new Error(
+            'Payment service is currently booting up. Please try again in a moment.',
+          );
+        }
+        throw new Error(`Payment service error: ${raw}`);
+      }
+
+      // ── Inspect the structured error (path A) ───────────────────────────
+      if (invokeError) {
+        const errObj = invokeError as { message?: string; status?: number; context?: { status?: number } };
+        const status  = errObj.status ?? errObj.context?.status ?? 0;
+        const rawMsg  = errObj.message ?? String(invokeError);
+
+        // 404 = function not deployed / local container not started yet
+        if (status === 404 || rawMsg.includes('404') || rawMsg.includes('Not Found')) {
+          throw new Error(
+            'Payment service is currently booting up. Please try again in a moment.',
+          );
+        }
+        // 401 = JWT expired mid-session
+        if (status === 401 || rawMsg.includes('401') || rawMsg.includes('Unauthorized')) {
+          throw new Error('Your session expired. Please refresh the page and try again.');
+        }
+        throw new Error(`Edge Function error: ${rawMsg}`);
+      }
+
+      // ── Extract the Stripe checkout URL ─────────────────────────────────
+      const payload  = invokeData as { url?: string; error?: string } | null;
+      const url      = payload?.url;
+
+      if (!url) {
+        const serverMsg = payload?.error;
+        throw new Error(serverMsg ?? 'No checkout URL returned — please try again.');
+      }
+
+      // ── Hand off to Stripe ───────────────────────────────────────────────
+      console.log('💳 [Billing] Redirecting to Stripe Checkout…');
+      navigatingToStripe = true;
+      window.location.href = url;
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('❌ [Billing] startCheckout failed:', msg);
+      alert(msg);   // already user-friendly at this point
+
+    } finally {
+      if (!navigatingToStripe) {
+        set({ isCheckingOut: false });
+      }
+    }
+  },
 
   finishCheckout: () =>
     set({ isCheckingOut: false }),
+
+  checkPaywall: (context = 'general') => {
+    const isPremium = useAuthStore.getState().isPremium;
+    if (isPremium) return true;
+    set({ isPaywallOpen: true, paywallContext: context });
+    return false;
+  },
 }));
