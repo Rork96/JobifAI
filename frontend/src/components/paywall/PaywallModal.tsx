@@ -173,9 +173,6 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
     startCheckout(priceId, mode);
   }, [startCheckout]);
 
-  // ── DEV unlock ────────────────────────────────────────────────────────────
-  const handleDevUnlock = useCallback(() => { onAccessGranted(); }, [onAccessGranted]);
-
   // ── Plan data ─────────────────────────────────────────────────────────────
   const plans = [
     {
@@ -376,22 +373,6 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
               </span>
             </button>
 
-            {/* DEV-only bypass — tree-shaken in production */}
-            {import.meta.env.DEV && (
-              <div className="mt-6 pt-5 border-t border-dashed border-white/[0.06]">
-                <button
-                  type="button"
-                  onClick={handleDevUnlock}
-                  className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 px-4 py-2.5 text-xs font-mono font-semibold text-emerald-500/70 transition-colors"
-                >
-                  <span className="text-emerald-500">⚙</span>
-                  [DEV] Unlock PDF — skip Stripe
-                </button>
-                <p className="text-[10px] mt-1.5" style={{ color: '#3d3a37' }}>
-                  Only visible when <code style={{ color: '#6b6560' }}>import.meta.env.DEV</code>
-                </p>
-              </div>
-            )}
           </div>
         </motion.div>
       </motion.div>

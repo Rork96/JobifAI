@@ -13,6 +13,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useDocumentStore } from '@/store/useDocumentStore';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useBillingStore } from '@/store/useBillingStore';
+import { useChatStore } from '@/store/useChatStore';
 import { saveResume, getResumeById } from '@/lib/db';
 import SandwichDiffInline from '@/components/document/SandwichDiffInline';
 import PrintTemplate from '@/components/document/PrintTemplate';
@@ -118,7 +119,10 @@ export default function WorkspacePage() {
 
   const user        = useAuthStore(s => s.user);
   const isPremium   = useAuthStore(s => s.isPremium);
+  const freeRewrites = useAuthStore(s => s.freeRewrites);
   const openPaywall = useBillingStore(s => s.openPaywall);
+  // BYOK users have entered their own Gemini key — they bypass all quota limits.
+  const byokApiKey  = useChatStore(s => s.byokApiKey);
 
   // ── Local UI state ─────────────────────────────────────────────────────────
   const [chatInput, setChatInput] = useState('');
@@ -308,16 +312,57 @@ export default function WorkspacePage() {
   // Two paths:
   //   • Bullet selected  → Surgeon agent (generateRewrite) — proposes a diff
   //   • No bullet        → Mentor agent  (generateChatResponse) — general advice
+  //
+  // Quota enforcement rules (in priority order):
+  //   1. Premium users  → unlimited, no check needed.
+  //   2. BYOK users     → own Gemini key, bypass all server-side quota.
+  //   3. Free users     → must have freeRewrites > 0; hard-block + paywall otherwise.
+  //
+  // Credit is decremented OPTIMISTICALLY on dispatch (not on success) so:
+  //   - The counter updates immediately after the button press (snappy UX).
+  //   - Users cannot exploit "fire + navigate away before success" retry loops.
+  //   - Server remains authoritative; the frontend value is display-only.
   const handleChatSubmit = useCallback(() => {
     const text = chatInput.trim();
     if (!text) return;
 
+    // ── Quota gate ──────────────────────────────────────────────────────────
+    // Read fresh state snapshots — don't close over stale selector values.
+    const { isPremium: premium, freeRewrites: credits } = useAuthStore.getState();
+    const bk = useChatStore.getState().byokApiKey;
+
+    if (!premium && !bk && credits <= 0) {
+      // Hard block: no API call is made, paywall opens immediately.
+      addChatMessage(
+        'mascot',
+        "You've used all your free AI actions. Upgrade to Pro for unlimited rewrites and coaching! 🚀",
+      );
+      useBillingStore.getState().openPaywall('limit_reached');
+      return;
+    }
+
     addChatMessage('user', text);
     setChatInput('');
-    addChatMessage('mascot', 'Working on it... Give me a second.');
+    addChatMessage('mascot', 'Working on it… Give me a second.');
 
-    const store        = useDocumentStore.getState();
+    // Decrement credit immediately on dispatch (only for non-premium, non-BYOK users).
+    if (!premium && !bk) {
+      useAuthStore.getState().decrementFreeRewrites();
+    }
+
+    const store          = useDocumentStore.getState();
     const jobDescription = store.jobDescription;
+
+    // ── Resume context: serialise the full document for Mac ─────────────────
+    // Mac reads the real resume on every call — no amnesia, no hallucination.
+    // Serialised as compact JSON; backend truncates to 5–6 k chars as needed.
+    // candidateName + atsScore included so Mac can reference them by name.
+    const resumeContext = JSON.stringify({
+      candidateName:   store.candidateName,
+      atsScore:        store.atsScore,
+      missingKeywords: store.missingKeywords,
+      sections:        store.resumeSections,
+    });
 
     if (activeBulletId) {
       // ── Surgeon path — rewrite the selected bullet ──────────────────────
@@ -326,7 +371,7 @@ export default function WorkspacePage() {
         .flatMap(s => s.bullets)
         .find(b => b.id === bulletId)?.text ?? '';
 
-      generateRewrite(originalBullet, jobDescription, text)
+      generateRewrite(originalBullet, jobDescription, text, resumeContext)
         .then((results) => {
           if (results.proposedText && results.proposedText.trim() !== '') {
             store.setPendingRewrite(bulletId, results.proposedText);
@@ -340,7 +385,7 @@ export default function WorkspacePage() {
         });
     } else {
       // ── Mentor path — general career coaching ───────────────────────────
-      generateChatResponse(text, jobDescription, store.atsScore, store.missingKeywords)
+      generateChatResponse(text, jobDescription, store.atsScore, store.missingKeywords, resumeContext)
         .then((results) => {
           addChatMessage('mascot', results.coachMessage);
         })
@@ -351,10 +396,21 @@ export default function WorkspacePage() {
   }, [chatInput, activeBulletId, addChatMessage]);
 
   // ── PDF export ────────────────────────────────────────────────────────────
-  // Sets document.title before calling window.print() so the browser uses it
-  // as the default filename in the Save As dialog (e.g. "Pavlo_Tsyhanash_Resume").
-  // The original title is restored 1 s later so the tab label returns to normal.
+  // PDF export is a paid feature ("No PDF export" on the free tier per PaywallModal copy).
+  // Gate: premium users and BYOK users can export freely.
+  // Free users are sent to the paywall with source tag 'pdf_export'.
+  // Sets document.title before window.print() so the browser uses it as the
+  // default filename in the Save As dialog (e.g. "Pavlo_Tsyhanash_Resume").
   const handleExport = useCallback(() => {
+    // ── Premium / BYOK gate ─────────────────────────────────────────────────
+    const { isPremium: premium } = useAuthStore.getState();
+    const bk = useChatStore.getState().byokApiKey;
+
+    if (!premium && !bk) {
+      useBillingStore.getState().openPaywall('pdf_export');
+      return;
+    }
+
     const { candidateName } = useDocumentStore.getState();
     const slug = (candidateName && candidateName !== 'Unknown' ? candidateName : 'Candidate')
       .replace(/[^a-zA-Z0-9\s]/g, '')
@@ -478,6 +534,25 @@ export default function WorkspacePage() {
               {saveStatus === 'error'  && '✕ Save failed'}
             </span>
 
+            {/* ── Free-tier credit counter ─────────────────────────────────────
+               Shows remaining AI actions to create urgency without surprise.
+               Hidden for premium users and BYOK users (they have unlimited).  */}
+            {!isPremium && !byokApiKey && (
+              <span
+                className={[
+                  'text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-full border',
+                  freeRewrites <= 1
+                    ? 'bg-red-50 border-red-200 text-red-600'
+                    : freeRewrites <= 2
+                      ? 'bg-amber-50 border-amber-200 text-amber-700'
+                      : 'bg-[#e8e6dc] border-[#e3e0d6] text-[#87867f]',
+                ].join(' ')}
+                title={`${freeRewrites} free AI action${freeRewrites !== 1 ? 's' : ''} remaining`}
+              >
+                ⚡ {freeRewrites}/3
+              </span>
+            )}
+
             {/* Upgrade CTA — free users only */}
             {!isPremium && (
               <button
@@ -496,19 +571,26 @@ export default function WorkspacePage() {
 
           <button
             onClick={handleExport}
+            title={!isPremium && !byokApiKey ? 'PDF export requires Pro or BYOK — click to upgrade' : 'Export as PDF'}
             className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-1.5 rounded-full transition-all duration-150"
             style={{
-              background: '#141413',
-              color: '#faf9f5',
+              background: !isPremium && !byokApiKey ? '#e8e6dc' : '#141413',
+              color: !isPremium && !byokApiKey ? '#87867f' : '#faf9f5',
               border: 'none',
               cursor: 'pointer',
               letterSpacing: '0.01em',
               fontFamily: 'system-ui, Arial, sans-serif',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#c96442'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#141413'; }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = '#c96442';
+              e.currentTarget.style.color = '#faf9f5';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = !isPremium && !byokApiKey ? '#e8e6dc' : '#141413';
+              e.currentTarget.style.color = !isPremium && !byokApiKey ? '#87867f' : '#faf9f5';
+            }}
           >
-            ↓ Export PDF
+            {!isPremium && !byokApiKey ? '🔒 Export PDF' : '↓ Export PDF'}
           </button>
         </div>
 
@@ -677,12 +759,23 @@ export default function WorkspacePage() {
 
         {/* Header */}
         <div className="px-5 py-4 shrink-0" style={{ borderBottom: '1px solid #e8e6dc' }}>
-          <p
-            className="text-base font-medium text-[#141413]"
-            style={{ fontFamily: 'Georgia, serif' }}
-          >
-            Mac · AI Coach
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p
+              className="text-base font-medium text-[#141413]"
+              style={{ fontFamily: 'Georgia, serif' }}
+            >
+              Mac · AI Coach
+            </p>
+            {/* BYOK indicator — shown when a personal Gemini key is active */}
+            {byokApiKey && (
+              <span
+                className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0"
+                title="Your own Gemini API key is active — unlimited usage"
+              >
+                🔑 BYOK
+              </span>
+            )}
+          </div>
           {activeBulletId ? (
             <p
               className="text-xs mt-0.5 truncate"
@@ -709,6 +802,54 @@ export default function WorkspacePage() {
             </p>
           )}
         </div>
+
+        {/* ── Credit counter bar ─────────────────────────────────────────────────
+             Visible only for free non-BYOK users. Shows remaining AI actions
+             with colour-coded urgency: neutral → amber (≤2) → red (≤1).
+             Tapping "Upgrade" from here tags the paywall source 'credit_bar'.   */}
+        {!isPremium && !byokApiKey && (
+          <div
+            className="px-4 py-2 flex items-center justify-between gap-2 shrink-0"
+            style={{
+              background: freeRewrites <= 1
+                ? 'rgba(239,68,68,0.04)'
+                : freeRewrites <= 2
+                  ? 'rgba(245,158,11,0.05)'
+                  : 'rgba(232,230,220,0.40)',
+              borderBottom: '1px solid #e8e6dc',
+            }}
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-sm" aria-hidden="true">⚡</span>
+              <span
+                className={[
+                  'text-[11px] font-semibold truncate',
+                  freeRewrites <= 1  ? 'text-red-600'    :
+                  freeRewrites <= 2  ? 'text-amber-700'  :
+                                       'text-[#87867f]',
+                ].join(' ')}
+                style={{ fontFamily: 'system-ui, Arial, sans-serif' }}
+              >
+                {freeRewrites > 0
+                  ? `${freeRewrites} free AI action${freeRewrites !== 1 ? 's' : ''} left`
+                  : 'No free actions left'}
+              </span>
+            </div>
+            <button
+              onClick={() => openPaywall('credit_bar')}
+              className={[
+                'text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap shrink-0',
+                'transition-all duration-150',
+                freeRewrites <= 1
+                  ? 'bg-red-500 text-white hover:bg-red-600'
+                  : 'bg-[#c96442]/10 text-[#c96442] hover:bg-[#c96442] hover:text-white',
+              ].join(' ')}
+              style={{ fontFamily: 'system-ui, Arial, sans-serif' }}
+            >
+              Upgrade ✨
+            </button>
+          </div>
+        )}
 
         {/* Message list */}
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
@@ -832,46 +973,61 @@ export default function WorkspacePage() {
 
         {/* Input — border-top acts as the visual separator above the banner too */}
         <div className="px-4 pt-3 pb-4 shrink-0" style={{ borderTop: '1px solid #e8e6dc' }}>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleChatSubmit(); }}
-              placeholder={
-                activeBulletId
-                  ? 'Tell Mac how to improve this bullet…'
-                  : 'Ask Mac anything about your resume…'
-              }
-              className="flex-1 px-3 py-2 text-sm outline-none transition-colors"
-              style={{
-                fontFamily: 'system-ui, Arial, sans-serif',
-                borderRadius: 12,
-                border: '1px solid #e8e6dc',
-                background: '#ffffff',
-                color: '#141413',
-                cursor: 'text',
-              }}
-              onFocus={e => { e.currentTarget.style.borderColor = '#3898ec'; }}
-              onBlur={e => { e.currentTarget.style.borderColor = '#e8e6dc'; }}
-            />
+          {/* ── Hard-block overlay when credits = 0 (free + no BYOK) ──────────
+               The input stays visible so users can see what they'd type, but
+               the form is fully disabled and clicking anywhere opens the paywall. */}
+          {!isPremium && !byokApiKey && freeRewrites <= 0 ? (
             <button
-              onClick={handleChatSubmit}
-              disabled={!chatInput.trim()}
-              className="px-3 py-2 text-sm font-semibold transition-colors"
-              style={{
-                borderRadius: 12,
-                background: chatInput.trim() ? '#c96442' : '#e8e6dc',
-                color: chatInput.trim() ? '#faf9f5' : '#b0aea5',
-                cursor: chatInput.trim() ? 'pointer' : 'not-allowed',
-                boxShadow: chatInput.trim()
-                  ? '#c96442 0px 0px 0px 0px, #c96442 0px 0px 0px 1px'
-                  : 'none',
-              }}
+              type="button"
+              onClick={() => openPaywall('input_locked')}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-[#c96442]/40 bg-[#c96442]/[0.04] transition-all hover:bg-[#c96442]/[0.07]"
+              style={{ fontFamily: 'system-ui, Arial, sans-serif' }}
             >
-              ↑
+              <span className="text-[#c96442] text-base">🔒</span>
+              <span className="text-xs font-semibold text-[#c96442]">Upgrade to unlock AI actions</span>
             </button>
-          </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleChatSubmit(); }}
+                placeholder={
+                  activeBulletId
+                    ? 'Tell Mac how to improve this bullet…'
+                    : 'Ask Mac anything about your resume…'
+                }
+                className="flex-1 px-3 py-2 text-sm outline-none transition-colors"
+                style={{
+                  fontFamily: 'system-ui, Arial, sans-serif',
+                  borderRadius: 12,
+                  border: '1px solid #e8e6dc',
+                  background: '#ffffff',
+                  color: '#141413',
+                  cursor: 'text',
+                }}
+                onFocus={e => { e.currentTarget.style.borderColor = '#3898ec'; }}
+                onBlur={e => { e.currentTarget.style.borderColor = '#e8e6dc'; }}
+              />
+              <button
+                onClick={handleChatSubmit}
+                disabled={!chatInput.trim()}
+                className="px-3 py-2 text-sm font-semibold transition-colors"
+                style={{
+                  borderRadius: 12,
+                  background: chatInput.trim() ? '#c96442' : '#e8e6dc',
+                  color: chatInput.trim() ? '#faf9f5' : '#b0aea5',
+                  cursor: chatInput.trim() ? 'pointer' : 'not-allowed',
+                  boxShadow: chatInput.trim()
+                    ? '#c96442 0px 0px 0px 0px, #c96442 0px 0px 0px 1px'
+                    : 'none',
+                }}
+              >
+                ↑
+              </button>
+            </div>
+          )}
         </div>
 
       </div>

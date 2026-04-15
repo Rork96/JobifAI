@@ -1,5 +1,5 @@
 /**
- * lib/api.ts — Typed FastAPI client
+ * lib/api.ts — Typed FastAPI client + frontend mocks
  * ─────────────────────────────────────────────────────────────────────────────
  * Single source of truth for all HTTP calls to the backend.
  *
@@ -19,6 +19,7 @@
  */
 
 import { supabase } from '@/lib/supabase';
+import type { ResumeSection } from '@/lib/types';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -227,6 +228,39 @@ export async function getAtsScore(
   return apiPost<AtsScoreRequest, AtsScoreResponse>('/api/ats-score', req, opts);
 }
 
+// ── Endpoint: /api/parse-job ──────────────────────────────────────────────────
+
+export interface ParseJobRequest {
+  /** URL of the job posting to scrape (mutually exclusive with text) */
+  url?:  string;
+  /** Raw pasted job description text — bypasses scraping */
+  text?: string;
+}
+
+export interface ParseJobResponse {
+  success:    boolean;
+  text:       string;
+  title:      string;
+  /** "url" | "text" | "error" */
+  source:     string;
+  /** User-facing message when success=false */
+  error_hint: string;
+  char_count: number;
+}
+
+/**
+ * Extract a job description from a URL (scraper) or normalise pasted raw text.
+ *
+ * Always returns HTTP 200 — check `response.success` before using `response.text`.
+ * When `success === false`, show `error_hint` and ask the user to paste manually.
+ */
+export async function parseJob(
+  req: ParseJobRequest,
+  opts?: { signal?: AbortSignal },
+): Promise<ParseJobResponse> {
+  return apiPost<ParseJobRequest, ParseJobResponse>('/api/parse-job', req, opts);
+}
+
 // ── Endpoint: /api/coach ──────────────────────────────────────────────────────
 
 export interface ConversationTurn {
@@ -259,3 +293,200 @@ export async function coachMessage(
 ): Promise<CoachResponse> {
   return apiPost<CoachRequest, CoachResponse>('/api/coach', req, opts);
 }
+
+// ── Endpoint: POST /api/v1/rewrite ────────────────────────────────────────────
+
+/**
+ * Response from POST /api/v1/rewrite.
+ * Mirrors backend's RewriteResponse Pydantic model (backend/schemas.py).
+ */
+export interface RewriteResponse {
+  proposedText: string;  // empty string "" when the gatekeeper rejects the instruction
+  coachMessage: string;
+}
+
+/**
+ * Ask the Surgeon agent to rewrite a single resume bullet.
+ *
+ * @param originalText   The exact bullet text the user clicked
+ * @param jobDescription Full JD string from the store, or null if none pasted
+ * @param userMessage    Free-text instruction typed by the user in the chat
+ * @param resumeContext  JSON-stringified ResumeSection[] — Mac reads the full
+ *                       document to prevent cross-bullet phrasing duplication
+ * @throws ApiError      On non-2xx responses
+ */
+export const generateRewrite = async (
+  originalText: string,
+  jobDescription: string | null,
+  userMessage: string,
+  resumeContext: string | null = null,
+): Promise<RewriteResponse> => {
+  let response: Response;
+  try {
+    response = await fetch('http://127.0.0.1:8000/api/v1/rewrite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ originalText, jobDescription, userMessage, resumeContext }),
+    });
+  } catch (err: unknown) {
+    throw new ApiError(
+      0,
+      (err as Error).message ?? 'Network request failed',
+      '/api/v1/rewrite',
+    );
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json() as { detail?: string };
+      detail = json.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new ApiError(response.status, detail, '/api/v1/rewrite');
+  }
+
+  return response.json() as Promise<RewriteResponse>;
+};
+
+// ── Endpoint: POST /api/v1/chat ───────────────────────────────────────────────
+
+export interface ChatResponse {
+  coachMessage: string;
+}
+
+/**
+ * Send a free-form message to the Mac mentor agent.
+ * Used when NO bullet is selected — the mentor answers general career / resume
+ * questions and leverages ATS context when available.
+ *
+ * @param userMessage    The user's free-text message
+ * @param jobDescription Full JD from the store, or null
+ * @param atsScore       Current ATS score, or null if not yet evaluated
+ * @param missingKeywords Top gap keywords from the evaluation
+ * @param resumeContext  JSON-stringified ResumeSection[] — Mac reads the
+ *                       full document so advice is never generic
+ * @throws ApiError on non-2xx responses
+ */
+export const generateChatResponse = async (
+  userMessage: string,
+  jobDescription: string | null,
+  atsScore: number | null,
+  missingKeywords: string[],
+  resumeContext: string | null = null,
+): Promise<ChatResponse> => {
+  let response: Response;
+  try {
+    response = await fetch('http://127.0.0.1:8000/api/v1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userMessage, jobDescription, atsScore, missingKeywords, resumeContext }),
+    });
+  } catch (err: unknown) {
+    throw new ApiError(
+      0,
+      (err as Error).message ?? 'Network request failed',
+      '/api/v1/chat',
+    );
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const json = await response.json() as { detail?: string };
+      detail = json.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new ApiError(response.status, detail, '/api/v1/chat');
+  }
+
+  return response.json() as Promise<ChatResponse>;
+};
+
+// ── Endpoint: POST /api/v1/parse (fast path) ─────────────────────────────────
+
+export interface ParseResponse {
+  candidateName: string;
+  contactInfo:   string[];
+  sections:      ResumeSection[];
+}
+
+/**
+ * Parse raw resume text into structured sections.
+ * Fast path — returns sections only, no ATS scoring.
+ * Resolves in ~2-4 s so the UI can navigate to Workspace immediately.
+ *
+ * @param rawText  Plain text extracted from the uploaded resume file
+ * @throws ApiError on non-2xx responses
+ */
+export const parseResume = async (
+  rawText: string,
+): Promise<ParseResponse> => {
+  let response: Response;
+  try {
+    response = await fetch('http://127.0.0.1:8000/api/v1/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawText }),
+    });
+  } catch (err: unknown) {
+    throw new ApiError(0, (err as Error).message ?? 'Network request failed', '/api/v1/parse');
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try { const j = await response.json() as { detail?: string }; detail = j.detail ?? detail; }
+    catch { /* ignore */ }
+    throw new ApiError(response.status, detail, '/api/v1/parse');
+  }
+
+  return response.json() as Promise<ParseResponse>;
+};
+
+
+// ── Endpoint: POST /api/v1/evaluate (background path) ────────────────────────
+
+/** Mirrors backend schemas.WeakBullet — single source of truth is the Pydantic model. */
+export interface WeakBullet {
+  id:         string;   // bullet.id from the parsed resume
+  label:      string;   // short 2-3 word human label, e.g. "Acme Corp Role"
+  suggestion: string;   // one-sentence coaching prompt, e.g. "Add deployment metrics."
+}
+
+export interface EvaluateResponse {
+  atsScore:        number;
+  missingKeywords: string[];
+  weakBullets:     WeakBullet[];
+}
+
+/**
+ * Score an already-parsed resume against a job description.
+ * Background path — faster than before (~2-4 s) because the backend no
+ * longer re-runs the parser.  Call after /parse has loaded the workspace.
+ *
+ * @param parsedResume   Sections object returned by parseResume()
+ * @param jobDescription Full JD text for ATS keyword alignment
+ * @throws ApiError on non-2xx responses
+ */
+export const evaluateResume = async (
+  parsedResume: { sections: ResumeSection[] },
+  jobDescription: string,
+): Promise<EvaluateResponse> => {
+  let response: Response;
+  try {
+    response = await fetch('http://127.0.0.1:8000/api/v1/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parsedResume, jobDescription }),
+    });
+  } catch (err: unknown) {
+    throw new ApiError(0, (err as Error).message ?? 'Network request failed', '/api/v1/evaluate');
+  }
+
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try { const j = await response.json() as { detail?: string }; detail = j.detail ?? detail; }
+    catch { /* ignore */ }
+    throw new ApiError(response.status, detail, '/api/v1/evaluate');
+  }
+
+  return response.json() as Promise<EvaluateResponse>;
+};
