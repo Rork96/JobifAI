@@ -1,4 +1,4 @@
-# JobifAI — AI Career Co-pilot
+# Jobif — AI Career Co-pilot
 
 An AI-powered resume optimisation engine. Users upload their resume + a target job description, and a multi-agent system streams a real-time interview that rewrites their resume to pass ATS filters and impress Canadian recruiters.
 
