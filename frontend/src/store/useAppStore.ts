@@ -1,29 +1,74 @@
 /**
- * store/useAppStore.ts — Global State (Zustand)
+ * useAppStore.ts — Store barrel / migration shim  [v2 REWRITE]
  * ─────────────────────────────────────────────────────────────────────────────
- * ARCHITECTURE: The "Slice" Pattern
+ * The v1 monolith that previously lived here has been replaced by five
+ * independent domain stores (Handbook §4.2). This file re-exports them all
+ * so any component that imports from '@/store/useAppStore' continues to work
+ * during the FSD migration window.
  *
- * Instead of one massive object, we split state into three focused "slices":
+ * Phase 6 (Handbook §4.3): When all components import directly from their
+ * respective store files, delete this barrel and fix remaining TS errors.
  *
- *   AuthSlice      → Who the user is and whether they've paid
- *   LangSlice      → USER_LANG / RESUME_LANG (the bilingual core feature)
- *   InterviewSlice → The state machine, chat history, and collected resume data
- *
- * All slices are composed into ONE Zustand store.  Components subscribe to
- * exactly the fields they need:
- *
- *   // Only re-renders when `user` changes — not when messages change
- *   const user = useAppStore(s => s.user);
- *
- * WHY Zustand over React Context / Redux?
- *   • Context re-renders the entire subtree on any state change.
- *     Zustand re-renders ONLY the components that subscribed to the changed field.
- *   • Redux requires actions, reducers, and selectors boilerplate.
- *     Zustand actions are just functions — call them directly, no dispatch.
- *   • Zustand works outside React (useful for calling actions from API handlers
- *     in Task 4 without needing a component reference).
+ * Performance note (Handbook §4.1):
+ *   Always use useShallow for array/object selectors:
+ *   import { useShallow } from 'zustand/react/shallow';
+ *   const messages = useChatStore(useShallow(s => s.messages));
  * ─────────────────────────────────────────────────────────────────────────────
  */
+
+export { useAuthStore }     from './useAuthStore';
+export type { AuthUser }    from './useAuthStore';
+
+export { useBillingStore }  from './useBillingStore';
+
+export { useSessionStore }  from './useSessionStore';
+export type {
+  AppMode,
+  AppStatus,
+  OnboardingMode,
+  WorkspaceMode,
+  MacState,
+}                           from './useSessionStore';
+
+export { useChatStore }     from './useChatStore';
+export type {
+  ChatMessage,
+  InterviewSSEEvent,
+}                           from './useChatStore';
+
+export { useDocumentStore } from './useDocumentStore';
+export type {
+  PendingDiff,
+  ResumeData,
+  AnalysisResult,
+}                           from './useDocumentStore';
+
+// ─── BELOW THIS LINE: v1 monolith (kept temporarily for migration reference) ──
+// DELETE everything below once all components are migrated to the new stores.
+// See Handbook §4.3 migration sequence.
+//
+// v1 monolith originally started here:
+//
+// * ARCHITECTURE: The "Slice" Pattern
+// *
+// *   AuthSlice      → Who the user is and whether they've paid
+// *   LangSlice      → USER_LANG / RESUME_LANG (the bilingual core feature)
+// *   InterviewSlice → The state machine, chat history, and collected resume data
+// *
+// * All slices are composed into ONE Zustand store.  Components subscribe to
+// * exactly the fields they need:
+// *
+// *   // Only re-renders when `user` changes — not when messages change
+// *   const user = useAppStore(s => s.user);
+// *
+// * WHY Zustand over React Context / Redux?
+// *   • Context re-renders the entire subtree on any state change.
+// *     Zustand re-renders ONLY the components that subscribed to the changed field.
+// *   • Redux requires actions, reducers, and selectors boilerplate.
+// *     Zustand actions are just functions — call them directly, no dispatch.
+// *   • Zustand works outside React (useful for calling actions from API handlers
+// *     in Task 4 without needing a component reference).
+// * ─────────────────────────────────────────────────────────────────────────────
 
 import { create, type StateCreator } from 'zustand';
 import { devtools } from 'zustand/middleware';

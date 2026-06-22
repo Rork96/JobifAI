@@ -1,0 +1,85 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# JobifAI — Docker Compose (macOS local development)
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Key differences from docker-compose.yml (production/Pi):
+#   - No platform: linux/arm64 constraint → works on Intel + Apple Silicon Macs
+#   - Frontend Vite dev server added (port 5173, HMR enabled)
+#   - Source code mounted as volumes → code changes are reflected without rebuild
+#   - Backend source mounted for uvicorn --reload
+#
+# Prerequisites:
+#   1. Copy .env.example → .env and fill in all secrets
+#   2. Install Docker Desktop for Mac (v4.x+)
+#
+# HMR note: The browser connects to localhost:5173 (Docker forwards the port).
+# The Vite server binds to 0.0.0.0 inside the container and uses polling for
+# file-change detection (macOS bind mounts don't support inotify).
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── React / Vite Frontend ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: jobifai-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      # Mount source so edits are reflected immediately
+      - ./frontend:/app
+      # Anonymous volume: keeps the container's node_modules intact.
+      # Without this, the host directory (which may have macOS binaries or
+      # may be empty) would shadow the Linux node_modules installed at build time.
+      - /app/node_modules
+    environment:
+      # Vite picks up VITE_* vars from process.env at dev-server startup.
+      # These are NOT baked in at build time in dev mode — Vite injects them live.
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_SUPABASE_URL: ${SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # No platform constraint: Docker Desktop on macOS selects the correct
+      # arch automatically (arm64 on Apple Silicon, amd64 on Intel).
+    image: jobifai-backend:dev
+    container_name: jobifai-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: dev
+    volumes:
+      # Live-reload: uvicorn --reload detects changes in the mounted source.
+      - ./backend:/app/backend
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

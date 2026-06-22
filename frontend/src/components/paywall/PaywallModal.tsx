@@ -1,157 +1,164 @@
 /**
- * PaywallModal.tsx — The Anchored Price Gate
+ * PaywallModal.tsx — Premium Price Gate (Phase 13 — warm parchment/terracotta palette)
  * ─────────────────────────────────────────────────────────────────────────────
- * Renders after onboarding Step 3 (the ATS score shock), before the user
- * enters the workspace.  Price anchoring strategy:
+ * Renders after the ATS score shock.  Price anchoring strategy:
+ *   1. Pro ($14.99/mo) — anchor sets perceived value high.
+ *   2. 24-Hour Pass ($4.99) — appears cheaper by comparison.
+ *   3. "1 Free Trial" — safety net for the hesitant.
  *
- *   1. Show "Pro ($14.99/month)" first — the anchor sets perceived value high.
- *   2. "24-Hour Pass ($4.99)" appears cheaper by comparison.
- *   3. "Start my 1 Free Trial" is the safety-net CTA for the hesitant.
+ * BYOK Easter Egg: triple-click the title within 1.5 s → BYOKModal.
  *
- * BYOK Easter Egg:
- *   Clicking the modal title 3× within 1.5 seconds opens BYOKModal.
- *   Target audience: developers / power users who already have a Gemini key.
+ * Design: dark warm surfaces (#141210 base) + terracotta CTA (#c96442).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BYOKModal } from './BYOKModal';
 import { useAppStore } from '@/store/useAppStore';
+import { useBillingStore } from '@/store/useBillingStore';
+import { useState } from 'react';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface PaywallModalProps {
-  /** Called when the user gains access (trial, purchase, or BYOK). */
   onAccessGranted: () => void;
 }
 
 // ─── Plan Card ────────────────────────────────────────────────────────────────
 interface PlanCardProps {
-  badge?:       string;
-  title:        string;
-  price:        string;
-  period:       string;
-  features:     string[];
-  cta:          string;
-  isPrimary:    boolean;
-  onSelect:     () => void;
+  badge?:        string;
+  title:         string;
+  price:         string;
+  period:        string;
+  features:      string[];
+  cta:           string;
+  isPrimary:     boolean;
+  isCheckingOut: boolean;
+  onSelect:      () => void;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
-  badge, title, price, period, features, cta, isPrimary, onSelect,
+  badge, title, price, period, features, cta, isPrimary, isCheckingOut, onSelect,
 }) => (
   <motion.div
-    whileHover={{ scale: 1.02, y: -2 }}
+    whileHover={{ scale: 1.02, y: -5 }}
     whileTap={{ scale: 0.98 }}
     onClick={onSelect}
     className={[
-      'relative cursor-pointer rounded-2xl p-6 border transition-all duration-200',
+      'relative cursor-pointer rounded-2xl p-6 border transition-all duration-300',
       isPrimary
-        ? 'bg-gradient-to-b from-orange-500/20 to-orange-600/10 border-orange-500/50 shadow-lg shadow-orange-500/10'
-        : 'bg-slate-800/70 border-slate-700/60 hover:border-slate-600',
+        ? 'bg-[#1e1a17] border-[#c96442]/35'
+        : 'bg-[#181512]/80 border-white/[0.07] hover:border-white/[0.12]',
     ].join(' ')}
+    style={isPrimary ? {
+      boxShadow: '0 0 50px rgba(201,100,66,0.12), inset 0 1px 0 rgba(255,255,255,0.06)',
+    } : {
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+    }}
   >
+    {/* Popular badge */}
     {badge && (
-      <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-orange-500 text-white text-xs font-semibold px-3 py-1 rounded-full shadow-md">
+      <span
+        className="absolute -top-3.5 left-1/2 -translate-x-1/2 text-white text-[10px] font-black px-4 py-1 rounded-full tracking-widest uppercase"
+        style={{
+          background: 'linear-gradient(135deg, #c96442 0%, #e07a52 100%)',
+          boxShadow: '0 2px 12px rgba(201,100,66,0.40)',
+        }}
+      >
         {badge}
       </span>
     )}
 
-    <div className="mb-4">
-      <p className="text-slate-400 text-sm font-medium mb-1">{title}</p>
-      <div className="flex items-baseline gap-1">
-        <span className={`text-4xl font-bold ${isPrimary ? 'text-orange-400' : 'text-white'}`}>
-          {price}
-        </span>
-        <span className="text-slate-400 text-sm">{period}</span>
-      </div>
+    {/* Plan name */}
+    <p className={`text-[10px] font-black uppercase tracking-[0.15em] mb-3 ${
+      isPrimary ? 'text-[#c96442]/80' : 'text-[#87867f]/70'
+    }`}>
+      {title}
+    </p>
+
+    {/* Price */}
+    <div className="flex items-baseline gap-1.5 mb-5">
+      <span className="text-5xl font-black text-white tracking-tighter leading-none">
+        {price}
+      </span>
+      <span className="text-[#87867f] text-sm font-medium">{period}</span>
     </div>
 
-    <ul className="space-y-2 mb-6">
+    {/* Features */}
+    <ul className="space-y-2.5 mb-7">
       {features.map((f) => (
-        <li key={f} className="flex items-start gap-2 text-sm text-slate-300">
-          <svg className="w-4 h-4 text-orange-400 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          </svg>
-          {f}
+        <li key={f} className="flex items-start gap-2.5 text-sm">
+          <span className={[
+            'mt-0.5 flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black',
+            isPrimary
+              ? 'bg-[#c96442]/20 text-[#c96442]'
+              : 'bg-white/[0.08] text-[#87867f]',
+          ].join(' ')}>
+            ✓
+          </span>
+          <span className={isPrimary ? 'text-[#d4cfc9] leading-snug' : 'text-[#87867f] leading-snug'}>
+            {f}
+          </span>
         </li>
       ))}
     </ul>
 
+    {/* CTA button */}
     <button
       type="button"
+      disabled={isCheckingOut}
       className={[
-        'w-full py-3 rounded-xl font-semibold text-sm transition-all duration-150',
+        'w-full py-3.5 rounded-xl font-bold text-sm',
+        'flex items-center justify-center gap-2',
+        'transition-all duration-200',
         isPrimary
-          ? 'bg-orange-500 hover:bg-orange-400 text-white shadow-md shadow-orange-500/30'
-          : 'bg-slate-700 hover:bg-slate-600 text-white',
+          ? 'text-white hover:-translate-y-0.5'
+          : 'bg-white/[0.08] hover:bg-white/[0.13] text-[#d4cfc9] hover:-translate-y-0.5',
+        isCheckingOut ? 'opacity-70 cursor-not-allowed !translate-y-0' : 'cursor-pointer',
       ].join(' ')}
+      style={isPrimary ? {
+        background: 'linear-gradient(135deg, #c96442 0%, #e07a52 100%)',
+        boxShadow: isCheckingOut ? 'none' : '0 4px 20px rgba(201,100,66,0.40)',
+      } : undefined}
     >
-      {cta}
+      {isCheckingOut ? (
+        <>
+          <svg className="animate-spin h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10"
+              stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+          </svg>
+          Redirecting to Stripe…
+        </>
+      ) : cta}
     </button>
   </motion.div>
 );
 
-// ─── Checkout helper ──────────────────────────────────────────────────────────
-/**
- * Calls POST /api/checkout and redirects the browser to Stripe's hosted
- * Checkout page.  On success Stripe sends a webhook that flips is_premium.
- *
- * Returns an error string if the request fails (so we can surface it in UI),
- * or null on redirect (the function never "returns" in the happy path because
- * the browser navigates away).
- */
-async function redirectToStripeCheckout(userEmail?: string): Promise<string | null> {
-  try {
-    const res = await fetch('/api/checkout', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_email:  userEmail ?? null,
-        success_url: `${window.location.origin}/?checkout=success`,
-        cancel_url:  `${window.location.origin}/?checkout=cancel`,
-      }),
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => `HTTP ${res.status}`);
-      return detail;
-    }
-
-    const { url } = (await res.json()) as { url: string; session_id: string };
-    // Navigate to Stripe-hosted Checkout — the page moves away from our app.
-    window.location.href = url;
-    return null; // unreachable after navigation
-
-  } catch (err) {
-    return err instanceof Error ? err.message : 'Network error. Please try again.';
-  }
-}
+// ─── Price IDs ────────────────────────────────────────────────────────────────
+const PRICE_IDS = {
+  pro:  import.meta.env.VITE_STRIPE_PRO_PRICE_ID  || 'price_dummy_pro_monthly',
+  '24h': import.meta.env.VITE_STRIPE_24H_PRICE_ID || 'price_dummy_24h_pass',
+} as const;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) => {
-  const [showBYOK,      setShowBYOK]      = useState(false);
-  const [checkoutError, setCheckoutError] = useState('');
-  const [loadingPlan,   setLoadingPlan]   = useState<string | null>(null);
+  const [showBYOK, setShowBYOK] = useState(false);
 
-  // Grab the user's email so we can pre-fill the Stripe Checkout form
-  const userEmail       = useAppStore((s) => s.user?.email);
-  // currentAtsScore is the single source of truth — always a number (default 0)
   const currentAtsScore = useAppStore((s) => s.currentAtsScore);
 
-  // ── Triple-click easter egg ──────────────────────────────────────────────────
-  const clickCountRef  = useRef(0);
-  const clickTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startCheckout = useBillingStore(s => s.startCheckout);
+  const isCheckingOut = useBillingStore(s => s.isCheckingOut);
+
+  // ── Triple-click easter egg ────────────────────────────────────────────────
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleTitleClick = useCallback(() => {
     clickCountRef.current += 1;
-
-    // Reset counter after 1.5 seconds of inactivity
     if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-    clickTimerRef.current = setTimeout(() => {
-      clickCountRef.current = 0;
-    }, 1500);
-
+    clickTimerRef.current = setTimeout(() => { clickCountRef.current = 0; }, 1500);
     if (clickCountRef.current >= 3) {
       clickCountRef.current = 0;
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
@@ -159,57 +166,42 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
     }
   }, []);
 
-  // ── Checkout handler ─────────────────────────────────────────────────────────
-  // Placeholder: redirects to Stripe Checkout (Task 5 will wire the full
-  // backend webhook + entitlement flow).  Separated from redirectToStripeCheckout
-  // so we can swap the implementation without touching the component's call-sites.
-  const handleCheckout = useCallback(async (planKey: string) => {
-    setCheckoutError('');
-    setLoadingPlan(planKey);
-    const error = await redirectToStripeCheckout(userEmail ?? undefined);
-    // If we reach here the redirect didn't happen (network error / bad response)
-    setLoadingPlan(null);
-    if (error) setCheckoutError(error);
-  }, [userEmail]);
+  // ── Checkout handler ───────────────────────────────────────────────────────
+  const handleCheckout = useCallback((planKey: string) => {
+    const priceId = PRICE_IDS[planKey as keyof typeof PRICE_IDS] ?? planKey;
+    const mode: 'subscription' | 'payment' = planKey === '24h' ? 'payment' : 'subscription';
+    startCheckout(priceId, mode);
+  }, [startCheckout]);
 
-  // ── DEV unlock ───────────────────────────────────────────────────────────────
-  // Strictly dev-only: bypasses Stripe so engineers can test the workspace
-  // without a live payment session.  import.meta.env.DEV is replaced with
-  // `false` by Vite at production build time — the button is tree-shaken out.
-  const handleDevUnlock = useCallback(() => {
-    useAppStore.getState().setIsPremium(true);
-    onAccessGranted();
-  }, [onAccessGranted]);
-
-  // ── Plan data ────────────────────────────────────────────────────────────────
+  // ── Plan data ─────────────────────────────────────────────────────────────
   const plans = [
     {
-      badge:    'Most Popular',
-      title:    'Pro Plan',
-      price:    '$14.99',
-      period:   '/ month',
+      badge:     'Most Popular',
+      title:     'Pro Plan',
+      price:     '$14.99',
+      period:    '/ month',
       isPrimary: true,
-      planKey:  'pro',
-      features: [
+      planKey:   'pro',
+      features:  [
         'Unlimited ATS-optimised resumes',
-        'Gemini AI interview (all sections)',
+        'Full AI interview simulation',
         'PDF export + cover letter',
         'Real-time ATS score tracker',
         'Priority support',
       ],
-      cta: 'Go Pro — $14.99/month',
+      cta: 'Start Pro — $14.99/month',
     },
     {
-      badge:    undefined,
-      title:    '24-Hour Pass',
-      price:    '$4.99',
-      period:   '/ 24 h',
+      badge:     undefined,
+      title:     '24-Hour Pass',
+      price:     '$4.99',
+      period:    '/ 24 h',
       isPrimary: false,
-      planKey:  '24h',
-      features: [
+      planKey:   '24h',
+      features:  [
         '1 ATS-optimised resume',
         'Full AI interview session',
-        'PDF export',
+        'PDF export included',
         'ATS score snapshot',
       ],
       cta: 'Get 24-Hour Access',
@@ -218,140 +210,174 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onAccessGranted }) =
 
   return (
     <>
-      {/* ── Backdrop ──────────────────────────────────────────────────────────── */}
+      {/* ── Backdrop ────────────────────────────────────────────────────────── */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm flex items-center justify-center px-4"
+        className="fixed inset-0 z-50 flex items-center justify-center px-4"
+        style={{ background: 'rgba(10, 9, 8, 0.96)', backdropFilter: 'blur(12px)' }}
       >
-        {/* ── Panel ───────────────────────────────────────────────────────────── */}
+        {/* Warm ambient glow — terracotta */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
+          <div
+            className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[420px] rounded-full blur-[140px]"
+            style={{ background: 'rgba(201,100,66,0.08)' }}
+          />
+          <div
+            className="absolute bottom-0 right-0 w-[320px] h-[320px] rounded-full blur-[100px]"
+            style={{ background: 'rgba(224,122,82,0.05)' }}
+          />
+        </div>
+
+        {/* ── Panel ─────────────────────────────────────────────────────────── */}
         <motion.div
-          initial={{ opacity: 0, y: 32, scale: 0.96 }}
+          initial={{ opacity: 0, y: 44, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.1 }}
-          className="w-full max-w-2xl bg-slate-900 rounded-3xl border border-slate-700/60 shadow-2xl overflow-y-auto max-h-[90vh]"
+          transition={{ type: 'spring', stiffness: 270, damping: 26, delay: 0.06 }}
+          className="relative w-full max-w-xl overflow-y-auto max-h-[92vh] rounded-3xl"
+          style={{
+            background: '#141210',
+            border: '1px solid rgba(255,255,255,0.07)',
+            boxShadow: '0 30px 90px rgba(0,0,0,0.75)',
+          }}
         >
-          {/* ── Header ────────────────────────────────────────────────────────── */}
-          <div className="px-8 pt-8 pb-6 text-center border-b border-slate-800">
-            {/* ATS score pill */}
-            <div className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-5 ${
+          {/* Top-edge highlight line — terracotta warmth */}
+          <div
+            className="absolute inset-x-0 top-0 h-px pointer-events-none"
+            style={{ background: 'linear-gradient(90deg, transparent, rgba(201,100,66,0.30), transparent)' }}
+          />
+
+          {/* ── Header ──────────────────────────────────────────────────────── */}
+          <div className="relative px-8 pt-9 pb-7 text-center">
+            {/* ATS score pill — conditional severity colours stay as-is */}
+            <div className={[
+              'inline-flex items-center gap-2 rounded-full px-4 py-1.5 mb-6 border',
               currentAtsScore >= 70
-                ? 'bg-emerald-500/15 border border-emerald-500/30'
+                ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400'
                 : currentAtsScore >= 40
-                  ? 'bg-amber-500/15 border border-amber-500/30'
-                  : 'bg-red-500/15 border border-red-500/30'
-            }`}>
-              <span className={`w-2 h-2 rounded-full animate-pulse ${
-                currentAtsScore >= 70 ? 'bg-emerald-500' : currentAtsScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
-              }`} />
-              <span className={`text-xs font-semibold tracking-wide uppercase ${
-                currentAtsScore >= 70 ? 'text-emerald-400' : currentAtsScore >= 40 ? 'text-amber-400' : 'text-red-400'
-              }`}>
-                ATS Score: {currentAtsScore} / 100 — {currentAtsScore < 40 ? 'Invisible to ATS' : currentAtsScore < 70 ? 'Needs improvement' : 'Strong match'}
+                  ? 'bg-amber-500/10 border-amber-500/25 text-amber-400'
+                  : 'bg-red-500/10 border-red-500/25 text-red-400',
+            ].join(' ')}>
+              <span className={[
+                'w-1.5 h-1.5 rounded-full animate-pulse',
+                currentAtsScore >= 70 ? 'bg-emerald-400'
+                  : currentAtsScore >= 40 ? 'bg-amber-400'
+                  : 'bg-red-400',
+              ].join(' ')} />
+              <span className="text-[11px] font-bold tracking-widest uppercase">
+                ATS Score: {currentAtsScore}/100 —{' '}
+                {currentAtsScore < 40
+                  ? 'Invisible to recruiters'
+                  : currentAtsScore < 70
+                    ? 'Below the cutoff'
+                    : 'Strong match'}
               </span>
             </div>
 
-            {/* Clickable title — easter egg trigger */}
+            {/* Title — easter-egg trigger */}
             <button
               type="button"
               onClick={handleTitleClick}
-              className="block w-full text-3xl font-bold text-white mb-2 select-none cursor-default focus:outline-none"
+              className="block w-full mb-3 select-none cursor-default focus:outline-none"
               tabIndex={-1}
               aria-label="JobifAI — upgrade"
             >
-              Beat the ATS. Land the interview.
+              <span
+                className="text-[1.75rem] sm:text-3xl font-black text-white tracking-tight leading-tight"
+                style={{ fontFamily: 'Georgia, serif' }}
+              >
+                Beat the bot.{' '}
+                <span style={{ color: '#c96442' }}>Land the interview.</span>
+              </span>
             </button>
 
-            <p className="text-slate-400 text-sm max-w-sm mx-auto">
-              Your resume needs work. Let JobifAI's AI co-pilot rebuild it to pass ATS filters
-              and reach real hiring managers.
+            <p className="text-[13px] leading-relaxed max-w-[280px] mx-auto" style={{ color: '#87867f' }}>
+              Let JobifAI rebuild your resume to pass ATS filters
+              and reach the humans who actually hire.
             </p>
           </div>
 
+          {/* Divider */}
+          <div
+            className="h-px mx-8"
+            style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent)' }}
+          />
+
           {/* ── Pricing cards ────────────────────────────────────────────────── */}
-          <div className="px-8 py-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="px-8 py-7 grid grid-cols-1 sm:grid-cols-2 gap-4">
             {plans.map((plan) => (
               <PlanCard
                 key={plan.title}
                 {...plan}
-                cta={loadingPlan === plan.planKey ? 'Redirecting to Stripe…' : plan.cta}
-                onSelect={() => handleCheckout(plan.planKey)}
+                isCheckingOut={isCheckingOut}
+                onSelect={() => !isCheckingOut && handleCheckout(plan.planKey)}
               />
             ))}
           </div>
 
-          {/* ── Checkout error ───────────────────────────────────────────────── */}
-          <AnimatePresence>
-            {checkoutError && (
-              <motion.p
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="px-8 pb-2 text-center text-xs text-red-400"
-              >
-                {checkoutError}
-              </motion.p>
-            )}
-          </AnimatePresence>
-
-          {/* ── Premium teaser buttons ───────────────────────────────────────── */}
-          <div className="px-8 pb-2">
-            <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-3 text-center">
-              Also unlocked with Pro
+          {/* ── Locked feature teasers ────────────────────────────────────────── */}
+          <div className="px-8 pb-3">
+            <p
+              className="text-[9px] font-black uppercase tracking-[0.2em] mb-3 text-center"
+              style={{ color: '#4a4540' }}
+            >
+              Also included with Pro
             </p>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                disabled
-                className="flex items-center justify-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3 text-sm font-medium text-slate-500 cursor-not-allowed opacity-70"
-              >
-                <span>🪄</span> Cover Letter
-                <span className="ml-1 text-[10px] font-bold text-orange-500/80 uppercase tracking-wide">Pro</span>
-              </button>
-              <button
-                disabled
-                className="flex items-center justify-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/40 px-4 py-3 text-sm font-medium text-slate-500 cursor-not-allowed opacity-70"
-              >
-                <span>🎯</span> Interview Prep
-                <span className="ml-1 text-[10px] font-bold text-orange-500/80 uppercase tracking-wide">Pro</span>
-              </button>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { icon: '🪄', label: 'Cover Letter' },
+                { icon: '🎯', label: 'Interview Prep' },
+              ].map(({ icon, label }) => (
+                <div
+                  key={label}
+                  className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-medium cursor-not-allowed"
+                  style={{
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.05)',
+                    color: '#4a4540',
+                  }}
+                >
+                  <span>{icon}</span>
+                  <span>{label}</span>
+                  <span
+                    className="ml-auto text-[9px] font-black uppercase tracking-wide"
+                    style={{ color: 'rgba(201,100,66,0.55)' }}
+                  >
+                    Pro
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* ── Free trial safety net ─────────────────────────────────────────── */}
-          <div className="px-8 pb-8 text-center">
-            <div className="h-px bg-slate-800 mb-6 mt-6" />
+          {/* ── Free trial footer ─────────────────────────────────────────────── */}
+          <div className="px-8 pb-9 pt-5 text-center">
+            <div
+              className="h-px mb-6"
+              style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent)' }}
+            />
+
             <button
               type="button"
               onClick={onAccessGranted}
-              className="text-slate-400 hover:text-orange-400 text-sm font-medium transition-colors duration-150 underline underline-offset-4 decoration-dotted"
+              className="group transition-colors duration-200"
             >
-              Start my 1 Free Trial — no credit card required
+              <span className="block text-sm font-medium" style={{ color: '#6b6560' }}>
+                Start my 1 Free Trial
+              </span>
+              <span
+                className="block text-[11px] mt-0.5 transition-colors"
+                style={{ color: '#3d3a37' }}
+              >
+                1 resume · ATS score only · No card required
+              </span>
             </button>
-            <p className="text-slate-600 text-xs mt-2">
-              1 resume · ATS score only · No PDF export
-            </p>
 
-            {/* ── DEV bypass — tree-shaken out in production builds ─────────── */}
-            {import.meta.env.DEV && (
-              <div className="mt-6 pt-5 border-t border-dashed border-slate-700/60">
-                <button
-                  type="button"
-                  onClick={handleDevUnlock}
-                  className="w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10 px-4 py-2.5 text-xs font-mono font-semibold text-emerald-400 transition-colors"
-                >
-                  <span className="text-emerald-500">⚙</span>
-                  [DEV] Unlock PDF — skip Stripe
-                </button>
-                <p className="text-slate-600 text-[10px] mt-1.5">
-                  Only visible in <code className="text-slate-500">import.meta.env.DEV</code> — not rendered in production builds
-                </p>
-              </div>
-            )}
           </div>
         </motion.div>
       </motion.div>
 
-      {/* ── BYOK Easter Egg Modal ─────────────────────────────────────────────── */}
+      {/* ── BYOK Easter Egg Modal ──────────────────────────────────────────────── */}
       <AnimatePresence>
         {showBYOK && (
           <BYOKModal
